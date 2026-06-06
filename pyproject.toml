@@ -1,0 +1,77 @@
+[project]
+name = "dezhu-agent"
+version = "0.1.0"
+description = "德柱Agent"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "cc" }
+]
+keywords = ["agent"]
+
+dependencies = [
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "structlog>=24",
+    "python-dotenv>=1",
+]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=6",
+    "ruff>=0.11",
+    "mypy>=1",
+    "pre-commit>=4",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = ["RUF001"]  # 允许中文全角标点
+
+[tool.ruff.lint.isort]
+known-first-party = ["dezhu_agent"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--cov=dezhu_agent",
+    "--cov-report=term-missing",
+]

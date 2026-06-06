@@ -1,10 +1,40 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "instructions": ["AGENTS.md"],
+  "formatter": {
+    "ruff": {
+      "command": ["uv", "run", "ruff", "format", "$FILE"],
+      "extensions": [".py"]
+    }
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": "ask"
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true
+  },
   "command": {
-    "verify": {
-      "description": "Run the full verification pipeline: ruff check → ruff format check → mypy → pytest",
-      "template": "uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/ && uv run pytest"
+    "test": {
+      "template": "Run the full test suite with coverage:\n```bash\nuv run pytest\n```\nAnalyze any failures and suggest fixes.",
+      "description": "Run pytest with coverage"
+    },
+    "lint": {
+      "template": "Run ruff lint check:\n```bash\nuv run ruff check src/\n```\nReport all lint violations found.",
+      "description": "Run ruff lint check"
+    },
+    "format": {
+      "template": "Run ruff formatter in check mode (dry-run):\n```bash\nuv run ruff format --check src/\n```\nReport any formatting issues found.",
+      "description": "Check code formatting with ruff"
+    },
+    "typecheck": {
+      "template": "Run mypy type checking:\n```bash\nuv run mypy src/\n```\nReport all type errors found.",
+      "description": "Run mypy type check"
+    },
+    "check": {
+      "template": "Run the full CI check suite:\n```bash\nuv run ruff check src/ && uv run ruff format --check src/ && uv run mypy src/\n```\nReport all issues found across lint, format, and type checks.",
+      "description": "Run full CI checks (lint + format + typecheck)"
     }
   }
 }

@@ -1,58 +1,96 @@
-# AGENTS.md — dezhu-agent
+# AGENTS.md — 德柱Agent (dezhu-agent)
 
-## Quick reference
+## 项目概述
+
+dezhu-agent 是一个 AI Agent 服务，基于 Python 3.12+ 构建。
+
+## 技术栈
+
+- **语言**: Python 3.12+
+- **包管理器**: uv (`uv.lock` 锁版本)
+- **配置管理**: pydantic-settings (从 `.env` 加载)
+- **日志**: structlog
+- **测试**: pytest + pytest-cov
+- **Lint/格式化**: ruff (line-length=120, double-quote)
+- **类型检查**: mypy (strict 模式)
+- **Git Hooks**: pre-commit (ruff + mypy)
+
+## 目录结构
+
+```
+dezhu-agent/
+├── src/dezhu_agent/
+│   ├── __init__.py          # 包入口，定义 __version__
+│   ├── __main__.py          # python -m dezhu_agent 入口
+│   ├── config.py            # Settings 类 (pydantic-settings)
+│   ├── core/                # 核心逻辑模块
+│   ├── models/              # 数据模型 (pydantic)
+│   ├── services/            # 业务服务层
+│   └── utils/               # 工具函数
+├── tests/                   # 测试文件
+├── pyproject.toml           # 项目元数据与工具配置
+├── .env.example             # 环境变量模板
+├── .pre-commit-config.yaml  # Pre-commit 钩子
+└── uv.lock                  # 依赖锁定
+```
+
+## 开发规范
+
+### 代码风格
+- **引号**: 双引号 (`"`)
+- **缩进**: 空格
+- **行宽**: 120 字符
+- **编码**: UTF-8, 允许中文注释
+- **命名**: 遵循 PEP 8 (`snake_case` 变量/函数, `PascalCase` 类)
+
+### Ruff 规则
+启用: E, W, F, I, N, UP, B, SIM, RUF
+忽略: RUF001 (允许中文全角标点)
+
+### Mypy 规则
+- `strict = true`
+- `ignore_missing_imports = true` (第三方库放宽检查)
+
+### 配置模式
+- Settings 类继承 `pydantic_settings.BaseSettings`，定义在 `src/dezhu_agent/config.py`
+- 通过 `get_config()` (带 `lru_cache`) 单例获取
+- 新配置项直接在 `Settings` 类中定义，环境变量 `.env` 自动映射
+
+## 常用命令
 
 ```bash
-uv sync                          # install/sync deps (always first)
-uv add <pkg>                     # add prod dep
-uv add --dev <pkg>               # add dev dep
-uv run python -m dezhu_agent     # run the agent
+# 开发运行
+uv run python -m dezhu_agent
+
+# 测试 (含覆盖率)
+uv run pytest
+
+# Lint 检查
+uv run ruff check src/
+
+# 格式化代码
+uv run ruff format src/
+
+# 类型检查
+uv run mypy src/
+
+# 完整检查 (lint + 格式化 + 类型)
+uv run ruff check src/ && uv run ruff format --check src/ && uv run mypy src/
+
+# 安装 pre-commit hooks
+uv run pre-commit install
 ```
 
-## Verification pipeline (run in this order)
+## 依赖说明
 
-```bash
-uv run ruff check src/ tests/    # lint
-uv run ruff format --check src/ tests/  # format check (omit --check to auto-fix)
-uv run mypy src/                 # type check (strict mode)
-uv run pytest                    # test + coverage
-```
-
-## Key conventions
-
-- **Python 3.12** — pinned in `.python-version`, uv auto-manages the interpreter.
-- **`src/` layout** — all source under `src/dezhu_agent/`. Tests import via `from dezhu_agent.xxx`, never relative. `pyproject.toml` sets `pythonpath = ["src"]` so pytest finds it.
-- **`uv` is the only package manager** — never use `pip` or `poetry`. Dependencies in `[dependency-groups]` and `[project].dependencies` of `pyproject.toml`. Lockfile `uv.lock` is committed.
-- **Dual quotes + line-length 120** — ruff format enforces this. Run `uv run ruff format src/ tests/` before committing.
-- **RUF001 ignored** — Chinese fullwidth punctuation is allowed (project uses Chinese).
-- **mypy strict** — all functions must have type annotations (`disallow_untyped_defs = true`).
-
-## Configuration
-
-- `src/dezhu_agent/config.py` uses `pydantic-settings` (`BaseSettings`). It auto-loads `.env` (not committed). Copy `.env.example` to `.env` for local overrides.
-- `@lru_cache` on `get_config()` ensures a single `Settings` instance.
-
-## Pre-commit
-
-```bash
-uv run pre-commit install        # one-time: enable git hooks (ruff + mypy on commit)
-```
-
-## Testing
-
-- **No test files yet** — create tests under `tests/`. `conftest.py` has a `settings` fixture.
-- Coverage is enabled by default (`--cov=dezhu_agent`). Reports printed to terminal.
-- Run a single test: `uv run pytest tests/test_foo.py -k "test_name"`
-
-## Architecture
-
-```
-src/dezhu_agent/
-  __main__.py      # entrypoint: python -m dezhu_agent
-  config.py        # pydantic-settings, reads .env
-  core/            # core business logic
-  services/        # service layer
-  models/          # pydantic / dataclass models
-  utils/           # utilities
-tests/             # pytest
-```
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| pydantic | >=2 | 数据校验 |
+| pydantic-settings | >=2 | 配置管理 |
+| structlog | >=24 | 结构化日志 |
+| python-dotenv | >=1 | .env 加载 |
+| pytest | >=8 | 测试框架 |
+| pytest-cov | >=6 | 测试覆盖率 |
+| ruff | >=0.11 | Lint & 格式化 |
+| mypy | >=1 | 类型检查 |
+| pre-commit | >=4 | Git 钩子 |

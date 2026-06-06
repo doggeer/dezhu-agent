@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "command": {
+    "verify": {
+      "description": "Run the full verification pipeline: ruff check → ruff format check → mypy → pytest",
+      "template": "uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/ && uv run pytest"
+    }
+  }
+}

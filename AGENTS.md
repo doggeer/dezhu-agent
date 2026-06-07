@@ -24,10 +24,26 @@ dezhu-agent/
 │   ├── __main__.py          # python -m dezhu_agent 入口
 │   ├── config.py            # Settings 类 (pydantic-settings)
 │   ├── core/                # 核心逻辑模块
+│   │   ├── __init__.py
+│   │   ├── agent.py         # Agent 循环、对话管理与持久化
+│   │   └── tools/           # 工具实现
+│   │       ├── __init__.py
+│   │       └── terminal_tool.py  # 终端命令执行工具
 │   ├── models/              # 数据模型 (pydantic)
+│   │   ├── __init__.py
+│   │   ├── message.py       # ConversationResult 模型
+│   │   ├── session.py       # SessionInfo 模型
+│   │   └── tool.py          # ToolDef、BaseTool、tool_error
 │   ├── services/            # 业务服务层
+│   │   ├── __init__.py
+│   │   ├── session_store.py # 会话持久化服务 (SQLite + WAL)
+│   │   └── tool_registry.py # 工具注册中心
 │   └── utils/               # 工具函数
+│       ├── __init__.py
+│       └── tool_decorator.py # @register_tool 装饰器
 ├── tests/                   # 测试文件
+│   ├── __init__.py
+│   └── conftest.py
 ├── pyproject.toml           # 项目元数据与工具配置
 ├── .env.example             # 环境变量模板
 ├── .pre-commit-config.yaml  # Pre-commit 钩子
@@ -99,8 +115,26 @@ tool_error(f"Unknown tool: {name}")                              # ✓
 - 新配置项直接在 `Settings` 类中定义，环境变量 `.env` 自动映射
 
 ### 单例模式
-- 使用模块级 `@lru_cache` 函数获取单例，风格参考 `get_config()` / `get_tool_registry()`
+- 使用模块级 `@lru_cache` 函数获取单例，风格参考 `get_config()` / `get_tool_registry()` / `get_session_store()`
 - 避免在类内部用 `_instance` + `@classmethod` 实现单例
+
+### 服务层规范
+
+- 服务类放在 `services/` 目录，一个文件一个服务
+- 服务通过模块级 `@lru_cache` 函数暴露单例（如 `get_tool_registry()`、`get_session_store()`）
+- 服务内部所需配置通过 `get_config()` 获取，不在构造函数中传入配置对象
+- 服务不直接打印输出，通过日志记录；输出层（如 CLI print）放在 `core/` 或 `__main__.py`
+
+### 数据库规范
+
+- 数据库引擎统一使用 SQLite
+- 必须开启 WAL 模式：`conn.execute("PRAGMA journal_mode=WAL")` — 让写操作不阻塞读
+- 连接管理使用私有 `_connect()` + `@contextmanager _get_conn()` 模式：
+  - `_connect()` 负责创建连接、设置 `row_factory`、开启 WAL 和 foreign_keys
+  - `_get_conn()` 作为 context manager，封装 commit/rollback/close 生命周期
+- 所有 SQL 参数使用参数化查询（`?` 占位符），禁止字符串拼接
+- 时间字段统一使用 TEXT 类型，存储 `yyyy-MM-dd HH:mm:ss` 格式字符串
+- 查询结果通过 Pydantic 模型返回（如 `SessionInfo`），禁止返回裸 `sqlite3.Row` 或 `dict`
 
 ## 常用命令
 

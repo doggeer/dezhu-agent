@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from dezhu_agent.models.tool import ToolDef
-from dezhu_agent.services.tool_registry import ToolRegistry
+from dezhu_agent.services.tool_registry import get_tool_registry
 
 T = TypeVar("T", bound=type)
 
@@ -34,7 +34,7 @@ def register_tool(
     """
 
     def decorator(cls: T) -> T:
-        registry = ToolRegistry.get_instance()
+        registry = get_tool_registry()
         tool_def = ToolDef(
             name=name,
             description=description,

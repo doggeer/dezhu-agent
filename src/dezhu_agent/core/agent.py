@@ -1,15 +1,16 @@
 """Agent 核心循环 —— 对话管理、工具调用调度."""
 
 from __future__ import annotations
-from typing import Any, cast
-from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageFunctionToolCall
-from dezhu_agent.config import get_config
-from dezhu_agent.services.tool_registry import ToolRegistry
 
+from typing import Any
+
+from openai import OpenAI
+
+from dezhu_agent.config import get_config
+from dezhu_agent.services.tool_registry import get_tool_registry
 
 _config = get_config()
-_registry = ToolRegistry.get_instance()
+_registry = get_tool_registry()
 
 SYSTEM_PROMPT = "You are a helpful assistant. You can run shell commands via the terminal tool."
 
@@ -45,48 +46,37 @@ def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> dict[
         response = client.chat.completions.create(
             model=_config.MODEL,
             messages=api_messages,  # type: ignore[arg-type]
-            tools=_registry.get_tools_for_openai() if not _registry.is_empty() else None,  # type: ignore[arg-type]
+            tools=_registry.get_tools_for_openai() or None,  # type: ignore[arg-type]
         )
 
         assistant_msg = response.choices[0].message
 
-        msg_dict: dict[str, Any] = {
+        msg: dict[str, Any] = {
             "role": "assistant",
             "content": assistant_msg.content or "",
         }
         if assistant_msg.tool_calls:
-            msg_dict["tool_calls"] = [
+            msg["tool_calls"] = [
                 {
                     "id": tc.id,
                     "type": "function",
                     "function": {
-                        "name": cast(ChatCompletionMessageFunctionToolCall, tc).function.name,
-                        "arguments": cast(ChatCompletionMessageFunctionToolCall, tc).function.arguments,
+                        "name": tc.function.name,  # type: ignore[union-attr]
+                        "arguments": tc.function.arguments,  # type: ignore[union-attr]
                     },
                 }
                 for tc in assistant_msg.tool_calls
             ]
-        messages.append(msg_dict)
+        messages.append(msg)
 
         if not assistant_msg.tool_calls:
-            return {
-                "final_response": assistant_msg.content,
-                "messages": messages,
-            }
+            return {"final_response": assistant_msg.content, "messages": messages}
 
-        for tool_call in assistant_msg.tool_calls:
-            tc = cast(ChatCompletionMessageFunctionToolCall, tool_call)
-            print(f"  [tool] {tc.function.name}: {tc.function.arguments}")
-            output = _registry.execute(tc.function.name, tc.function.arguments)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": output,
-                }
-            )
+        for tc in assistant_msg.tool_calls:
+            name = tc.function.name  # type: ignore[union-attr]
+            args = tc.function.arguments  # type: ignore[union-attr]
+            print(f"  [tool] {name}: {args}")
+            output = _registry.execute(name, args)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
 
-    return {
-        "final_response": "(max iterations reached)",
-        "messages": messages,
-    }
+    return {"final_response": "(max iterations reached)", "messages": messages}

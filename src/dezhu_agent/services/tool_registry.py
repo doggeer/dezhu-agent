@@ -5,56 +5,33 @@ from __future__ import annotations
 import importlib
 import json
 import pkgutil
-from typing import Any, ClassVar
+from functools import lru_cache
+from typing import Any
 
 from dezhu_agent.models.tool import ToolDef
 
 
 class ToolRegistry:
-    """工具注册中心单例.
+    """工具注册中心.
 
-    用法::
+    Usage::
 
-        registry = ToolRegistry.get_instance()
+        registry = get_tool_registry()
         registry.scan("dezhu_agent.core.tools")
         tools = registry.get_tools_for_openai()
         result = registry.execute("terminal", '{"command":"ls"}')
     """
 
-    _instance: ClassVar[ToolRegistry | None] = None
-
     def __init__(self) -> None:
         self._tools: dict[str, ToolDef] = {}
 
-    @classmethod
-    def get_instance(cls) -> ToolRegistry:
-        """获取 ToolRegistry 单例."""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
     def register(self, tool_def: ToolDef) -> None:
-        """注册一个工具定义."""
         self._tools[tool_def.name] = tool_def
 
-    def is_empty(self) -> bool:
-        """注册表是否为空."""
-        return len(self._tools) == 0
-
     def get_tools_for_openai(self) -> list[dict[str, Any]]:
-        """返回所有已注册工具的 OpenAI function-calling 格式列表."""
-        return [tool.to_openai_format() for tool in self._tools.values()]
+        return [t.to_openai_format() for t in self._tools.values()]
 
     def execute(self, name: str, arguments: str) -> str:
-        """根据工具名称和 JSON 参数字符串代理执行工具.
-
-        Args:
-            name: 工具名称
-            arguments: JSON 格式的参数字符串
-
-        Returns:
-            工具执行结果字符串
-        """
         tool_def = self._tools.get(name)
         if tool_def is None:
             return json.dumps({"error": f"Unknown tool: {name}"})
@@ -66,17 +43,12 @@ class ToolRegistry:
 
         try:
             instance = tool_def.handler()
-            result = instance.execute(**parsed_args)
-            return str(result)
+            return str(instance.execute(**parsed_args))
         except Exception as exc:
             return json.dumps({"error": f"Tool execution failed: {exc}"})
 
     def scan(self, package_name: str) -> None:
-        """扫描指定包下所有模块, 自动导入以触发 @register_tool 装饰器的注册.
-
-        Args:
-            package_name: 完整包名, 如 ``dezhu_agent.core.tools``
-        """
+        """扫描指定包下所有模块, 自动导入以触发 @register_tool 装饰器的注册."""
         try:
             package = importlib.import_module(package_name)
         except ModuleNotFoundError:
@@ -87,3 +59,8 @@ class ToolRegistry:
 
         for _, module_name, _ in pkgutil.walk_packages(package.__path__, prefix=package_name + "."):
             importlib.import_module(module_name)
+
+
+@lru_cache
+def get_tool_registry() -> ToolRegistry:
+    return ToolRegistry()

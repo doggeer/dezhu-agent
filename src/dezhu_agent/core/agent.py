@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from dezhu_agent.config import get_config
+from dezhu_agent.models.message import ConversationResult
 from dezhu_agent.services.tool_registry import get_tool_registry
 
 _config = get_config()
@@ -33,10 +34,10 @@ def agent_loop() -> None:
             break
 
         result = run_conversation(user_input, messages)
-        print(f"\nAssistant: {result['final_response']}\n")
+        print(f"\nAssistant: {result.final_response}\n")
 
 
-def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> ConversationResult:
     """同步 agent 循环: 调用模型, 执行工具, 回传结果, 反复直到模型不再请求工具."""
     messages.append({"role": "user", "content": user_message})
 
@@ -56,21 +57,26 @@ def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> dict[
             "content": assistant_msg.content or "",
         }
         if assistant_msg.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,  # type: ignore[union-attr]
-                        "arguments": tc.function.arguments,  # type: ignore[union-attr]
-                    },
-                }
-                for tc in assistant_msg.tool_calls
-            ]
+            tool_calls: list[dict[str, Any]] = []
+            for tc in assistant_msg.tool_calls:
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,  # type: ignore[union-attr]
+                            "arguments": tc.function.arguments,  # type: ignore[union-attr]
+                        },
+                    }
+                )
+            msg["tool_calls"] = tool_calls
         messages.append(msg)
 
         if not assistant_msg.tool_calls:
-            return {"final_response": assistant_msg.content, "messages": messages}
+            return ConversationResult(
+                final_response=assistant_msg.content or "",
+                messages=messages,
+            )
 
         for tc in assistant_msg.tool_calls:
             name = tc.function.name  # type: ignore[union-attr]
@@ -79,4 +85,7 @@ def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> dict[
             output = _registry.execute(name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
 
-    return {"final_response": "(max iterations reached)", "messages": messages}
+    return ConversationResult(
+        final_response="(max iterations reached)",
+        messages=messages,
+    )

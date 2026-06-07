@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from typing import Any
 
-from dezhu_agent.models.tool import BaseTool
+from dezhu_agent.models.tool import BaseTool, tool_error
 from dezhu_agent.utils.tool_decorator import register_tool
 
 BLOCKED_COMMANDS = [
@@ -40,7 +39,7 @@ class TerminalTool(BaseTool):
 
         for blocked in BLOCKED_COMMANDS:
             if blocked in command:
-                return json.dumps({"error": f"Blocked: {blocked}"})
+                return tool_error(f"Blocked: {blocked}")
 
         try:
             result = subprocess.run(

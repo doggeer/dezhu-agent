@@ -51,10 +51,56 @@ dezhu-agent/
 - `strict = true`
 - `ignore_missing_imports = true` (第三方库放宽检查)
 
+### 数据建模规范 — 避免裸数据
+
+禁止在业务代码中使用裸 `dict` 传递结构化数据。统一使用 **Pydantic 模型** + **工具函数**。
+
+**规则：**
+
+1. **结构化数据 → Pydantic 模型**
+   - 返回值、核心类型、领域概念优先定义为 Pydantic `BaseModel`
+   - 示例: `ConversationResult(final_response=..., messages=...)` 而非 `{"final_response": ..., "messages": ...}`
+   - `models/` 目录下放置所有数据模型
+
+2. **重复构造的 JSON 字符串 → 工具函数**
+   - 避免散落 `json.dumps({"error": "..."})` 或 `json.dumps({"key": value})`
+   - 提取为语义清晰的函数，放在对应模型文件的末尾
+   - 示例: `tool_error("Unknown tool")` 而非 `json.dumps({"error": "Unknown tool"})`
+
+3. **外部 API 边界例外**
+   - OpenAI SDK 要求的字典格式可在调用处临时构造，但内部传递必须使用模型
+   - 模型通过 `.model_dump()` 或 `.to_openai_format()` 转换到外部格式
+
+**反例：**
+
+```python
+# 裸 dict 返回值
+return {"final_response": text, "messages": msgs}      # ✗
+result["final_response"]                                 # ✗
+
+# 裸 json.dumps 散落各处
+json.dumps({"error": f"Unknown tool: {name}"})           # ✗
+```
+
+**正例：**
+
+```python
+# Pydantic 模型
+return ConversationResult(final_response=text, messages=msgs)  # ✓
+result.final_response                                            # ✓
+
+# 语义化工具函数
+tool_error(f"Unknown tool: {name}")                              # ✓
+```
+
 ### 配置模式
 - Settings 类继承 `pydantic_settings.BaseSettings`，定义在 `src/dezhu_agent/config.py`
 - 通过 `get_config()` (带 `lru_cache`) 单例获取
 - 新配置项直接在 `Settings` 类中定义，环境变量 `.env` 自动映射
+
+### 单例模式
+- 使用模块级 `@lru_cache` 函数获取单例，风格参考 `get_config()` / `get_tool_registry()`
+- 避免在类内部用 `_instance` + `@classmethod` 实现单例
 
 ## 常用命令
 

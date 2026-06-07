@@ -8,7 +8,7 @@ import pkgutil
 from functools import lru_cache
 from typing import Any
 
-from dezhu_agent.models.tool import ToolDef
+from dezhu_agent.models.tool import ToolDef, tool_error
 
 
 class ToolRegistry:
@@ -34,18 +34,18 @@ class ToolRegistry:
     def execute(self, name: str, arguments: str) -> str:
         tool_def = self._tools.get(name)
         if tool_def is None:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return tool_error(f"Unknown tool: {name}")
 
         try:
             parsed_args: dict[str, Any] = json.loads(arguments)
         except json.JSONDecodeError:
-            return json.dumps({"error": f"Invalid JSON arguments: {arguments}"})
+            return tool_error(f"Invalid JSON arguments: {arguments}")
 
         try:
             instance = tool_def.handler()
             return str(instance.execute(**parsed_args))
         except Exception as exc:
-            return json.dumps({"error": f"Tool execution failed: {exc}"})
+            return tool_error(f"Tool execution failed: {exc}")
 
     def scan(self, package_name: str) -> None:
         """扫描指定包下所有模块, 自动导入以触发 @register_tool 装饰器的注册."""

@@ -1,11 +1,17 @@
-"""工具数据模型 -- ToolDef、BaseTool."""
+"""工具数据模型 -- ToolDef、BaseTool、tool_error."""
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any
 
 from pydantic import BaseModel
+
+
+def tool_error(message: str) -> str:
+    """生成工具执行错误的 JSON 字符串."""
+    return json.dumps({"error": message})
 
 
 class ToolDef(BaseModel):

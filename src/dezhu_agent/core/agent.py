@@ -8,6 +8,7 @@ from openai import OpenAI
 
 from dezhu_agent.config import get_config
 from dezhu_agent.models.message import ConversationResult
+from dezhu_agent.services.session_store import get_session_store
 from dezhu_agent.services.tool_registry import get_tool_registry
 
 _config = get_config()
@@ -19,22 +20,65 @@ client = OpenAI(base_url=_config.BASE_URL, api_key=_config.API_KEY)
 
 
 def agent_loop() -> None:
-    """交互式 REPL 对话循环."""
+    """交互式 REPL 对话循环, 支持会话持久化."""
+
+    store = get_session_store()
+    store.init_db()
+
+    sessions = store.list_sessions(10)
 
     print("=== Agent Loop ===")
     print(f"Model: {_config.MODEL}")
     print(f"Base URL: {_config.BASE_URL}")
-    print("Type 'quit' to exit.\n")
+    print()
 
+    session_id: str | None = None
     messages: list[dict[str, Any]] = []
+
+    if sessions:
+        print("Recent sessions:")
+        for i, s in enumerate(sessions, 1):
+            print(f"  [{i}] {s.id[:4]}  {s.createtime}  {s.model}  {s.message_count} messages")
+        print("  [n] New session")
+        print()
+
+        while True:
+            choice = input("Select: ").strip()
+            if choice.lower() == "n":
+                break
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(sessions):
+                    session_id = sessions[idx].id
+                    messages = store.load_messages(session_id)
+                    print(f"Restored {len(messages)} messages from session {session_id[:8]}...\n")
+                    break
+            except ValueError:
+                pass
+            print("Invalid choice, try again.")
+
+    if session_id is None:
+        session_id = store.create_session("cli", _config.MODEL)
+        print(f"Created new session: {session_id[:8]}...\n")
+
+    saved_count = len(messages)
+    print("Type 'quit' to exit.\n")
 
     while True:
         user_input = input("You: ").strip()
         if not user_input or user_input.lower() in ("quit", "exit"):
+            new_msgs = messages[saved_count:]
+            if new_msgs:
+                store.append_messages(session_id, new_msgs)
             break
 
         result = run_conversation(user_input, messages)
         print(f"\nAssistant: {result.final_response}\n")
+
+        new_msgs = messages[saved_count:]
+        if new_msgs:
+            store.append_messages(session_id, new_msgs)
+            saved_count = len(messages)
 
 
 def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> ConversationResult:

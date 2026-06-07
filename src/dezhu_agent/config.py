@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     API_KEY: str = "sk-your-api-key"
     MODEL: str = "deepseek-v4-pro"
     MAX_ITERATIONS: int = 10
+    DB_PATH: str = "state.db"
 
 
 @lru_cache

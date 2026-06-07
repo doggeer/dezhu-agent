@@ -50,7 +50,7 @@ def agent_loop() -> None:
     print(f"Base URL: {_config.BASE_URL}")
     print("Type 'quit' to exit.\n")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = []
 
     while True:
         user_input = input("You: ").strip()
@@ -67,7 +67,8 @@ def run_conversation(user_message: str, messages: list) -> dict:
     messages.append({"role": "user", "content": user_message})
 
     for iteration in range(_config.MAX_ITERATIONS):
-        api_messages = messages
+        api_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+
 
         response = client.chat.completions.create(
             model=_config.MODEL,

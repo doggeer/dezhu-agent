@@ -1,23 +1,29 @@
-"""配置管理: 环境变量 -> pydantic Settings 自动校验."""
+"""应用配置 —— 基于 pydantic-settings, 从 .env / 环境变量自动加载."""
+
+from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_PATH),
         env_file_encoding="utf-8",
-        case_sensitive=False,
+        extra="ignore",
     )
 
-    # App
     APP_NAME: str = "dezhu-agent"
     ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-
-    # 预留扩展: 后续在这里添加数据库/Redis/LLM 等配置项
+    BASE_URL: str = "https://api.deepseek.com"
+    API_KEY: str = "sk-your-api-key"
+    MODEL: str = "deepseek-v4-pro"
+    MAX_ITERATIONS: int = 10
 
 
 @lru_cache

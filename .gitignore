@@ -218,3 +218,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 /.idea/**
+/.hermes/
+/state.db
+/state.db-shm
+/state.db-wal

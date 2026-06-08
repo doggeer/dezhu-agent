@@ -28,6 +28,9 @@ class ToolRegistry:
     def register(self, tool_def: ToolDef) -> None:
         self._tools[tool_def.name] = tool_def
 
+    def list_tools(self) -> list[ToolDef]:
+        return list(self._tools.values())
+
     def get_tools_for_openai(self) -> list[dict[str, Any]]:
         return [t.to_openai_format() for t in self._tools.values()]
 

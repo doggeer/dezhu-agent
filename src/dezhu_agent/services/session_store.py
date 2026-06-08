@@ -49,7 +49,8 @@ class SessionStore:
                     id TEXT PRIMARY KEY,
                     source TEXT NOT NULL DEFAULT 'cli',
                     model TEXT NOT NULL,
-                    createtime TEXT NOT NULL
+                    createtime TEXT NOT NULL,
+                    system_prompt TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -65,6 +66,10 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                 """
             )
+            # 兼容旧表迁移: 如果 system_prompt 列不存在则添加
+            cols = {row[1] for row in conn.execute("PRAGMA table_info('sessions')").fetchall()}
+            if "system_prompt" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
 
     def create_session(self, source: str, model: str) -> str:
         session_id = uuid.uuid4().hex
@@ -99,6 +104,24 @@ class SessionStore:
             )
             for row in rows
         ]
+
+    def store_system_prompt(self, session_id: str, system_prompt: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET system_prompt = ? WHERE id = ?",
+                (system_prompt, session_id),
+            )
+
+    def get_system_prompt(self, session_id: str) -> str | None:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT system_prompt FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        prompt = row["system_prompt"]
+        return prompt if prompt else None
 
     def load_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._get_conn() as conn:

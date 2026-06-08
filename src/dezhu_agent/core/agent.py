@@ -7,14 +7,13 @@ from typing import Any
 from openai import OpenAI
 
 from dezhu_agent.config import get_config
+from dezhu_agent.core.prompt_builder import build_system_prompt
 from dezhu_agent.models.message import ConversationResult
 from dezhu_agent.services.session_store import get_session_store
 from dezhu_agent.services.tool_registry import get_tool_registry
 
 _config = get_config()
 _registry = get_tool_registry()
-
-SYSTEM_PROMPT = "You are a helpful assistant. You can run shell commands via the terminal tool."
 
 client = OpenAI(base_url=_config.BASE_URL, api_key=_config.API_KEY)
 
@@ -34,6 +33,7 @@ def agent_loop() -> None:
 
     session_id: str | None = None
     messages: list[dict[str, Any]] = []
+    system_prompt: str = ""
 
     if sessions:
         print("Recent sessions:")
@@ -59,7 +59,16 @@ def agent_loop() -> None:
 
     if session_id is None:
         session_id = store.create_session("cli", _config.MODEL)
+        system_prompt = build_system_prompt(model=_config.MODEL)
+        store.store_system_prompt(session_id, system_prompt)
         print(f"Created new session: {session_id[:8]}...\n")
+    else:
+        cached = store.get_system_prompt(session_id)
+        if cached:
+            system_prompt = cached
+        else:
+            system_prompt = build_system_prompt(model=_config.MODEL)
+            store.store_system_prompt(session_id, system_prompt)
 
     saved_count = len(messages)
     print("Type 'quit' to exit.\n")
@@ -72,7 +81,7 @@ def agent_loop() -> None:
                 store.append_messages(session_id, new_msgs)
             break
 
-        result = run_conversation(user_input, messages)
+        result = run_conversation(user_input, messages, system_prompt)
         print(f"\nAssistant: {result.final_response}\n")
 
         new_msgs = messages[saved_count:]
@@ -81,12 +90,16 @@ def agent_loop() -> None:
             saved_count = len(messages)
 
 
-def run_conversation(user_message: str, messages: list[dict[str, Any]]) -> ConversationResult:
+def run_conversation(
+    user_message: str,
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+) -> ConversationResult:
     """同步 agent 循环: 调用模型, 执行工具, 回传结果, 反复直到模型不再请求工具."""
     messages.append({"role": "user", "content": user_message})
 
     for _ in range(_config.MAX_ITERATIONS):
-        api_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+        api_messages = [{"role": "system", "content": system_prompt}, *messages]
 
         response = client.chat.completions.create(
             model=_config.MODEL,

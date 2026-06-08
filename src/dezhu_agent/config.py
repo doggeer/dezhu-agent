@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     MODEL: str = "deepseek-v4-pro"
     MAX_ITERATIONS: int = 10
     DB_PATH: str = "state.db"
+    HERMES_DIR: str = ".hermes/"
+    PROMPT_MAX_FILE_CHARS: int = 20000
 
 
 @lru_cache

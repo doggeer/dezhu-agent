@@ -23,6 +23,7 @@ uv run python -m dezhu_agent
 - 命令执行 30 秒超时保护，输出限制 10000 字符
 - 基于 SQLite + WAL 模式的会话持久化：退出后对话不丢失，下次启动可恢复继续
 - 启动时交互式菜单：列出最近会话（显示 session ID 前 4 位 + 时间 + 消息数），选择恢复或新建
+- 6 层可定制 System Prompt 系统：通过 `.hermes/` 目录中的 Markdown 文件（SOUL / MEMORY / USER / skills）和项目级 HERMES.md / AGENTS.md 自动组装
 
 ## 配置
 
@@ -38,6 +39,8 @@ uv run python -m dezhu_agent
 | `MODEL` | `deepseek-v4-pro` | 模型名称 |
 | `MAX_ITERATIONS` | `10` | 单次对话最大工具调用轮数 |
 | `DB_PATH` | `state.db` | SQLite 数据库文件路径 |
+| `HERMES_DIR` | `.hermes/` | System Prompt 文件目录 |
+| `PROMPT_MAX_FILE_CHARS` | `20000` | Prompt 文件读取最大字符数 |
 
 ## 项目结构
 
@@ -50,6 +53,7 @@ dezhu-agent/
 │   ├── core/                # 核心逻辑模块
 │   │   ├── __init__.py
 │   │   ├── agent.py         # Agent 循环、对话管理与持久化
+│   │   ├── prompt_builder.py # 6 层 System Prompt 组装器
 │   │   └── tools/           # 工具实现
 │   │       ├── __init__.py
 │   │       └── terminal_tool.py  # 终端命令执行工具
@@ -67,7 +71,8 @@ dezhu-agent/
 │       └── tool_decorator.py # @register_tool 装饰器
 ├── tests/                   # 测试文件
 │   ├── __init__.py
-│   └── conftest.py
+│   ├── conftest.py
+│   └── test_prompt_builder.py
 ├── pyproject.toml           # 项目元数据与工具配置
 ├── .env.example             # 环境变量模板
 ├── .pre-commit-config.yaml  # Pre-commit 钩子

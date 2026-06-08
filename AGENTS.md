@@ -26,6 +26,7 @@ dezhu-agent/
 │   ├── core/                # 核心逻辑模块
 │   │   ├── __init__.py
 │   │   ├── agent.py         # Agent 循环、对话管理与持久化
+│   │   ├── prompt_builder.py # 6 层 System Prompt 组装器
 │   │   └── tools/           # 工具实现
 │   │       ├── __init__.py
 │   │       └── terminal_tool.py  # 终端命令执行工具
@@ -43,7 +44,8 @@ dezhu-agent/
 │       └── tool_decorator.py # @register_tool 装饰器
 ├── tests/                   # 测试文件
 │   ├── __init__.py
-│   └── conftest.py
+│   ├── conftest.py
+│   └── test_prompt_builder.py
 ├── pyproject.toml           # 项目元数据与工具配置
 ├── .env.example             # 环境变量模板
 ├── .pre-commit-config.yaml  # Pre-commit 钩子

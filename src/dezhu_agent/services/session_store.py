@@ -143,6 +143,24 @@ class SessionStore:
             messages.append(msg)
         return messages
 
+    def store_message(self, session_id: str, msg: dict[str, Any]) -> int:
+        """插入单条消息并返回自增 ID."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, createtime) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    msg["role"],
+                    msg.get("content"),
+                    json.dumps(msg["tool_calls"]) if msg.get("tool_calls") else None,
+                    msg.get("tool_call_id"),
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            row_id = cursor.lastrowid
+            return row_id if row_id is not None else -1
+
     def append_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         rows = [
             (

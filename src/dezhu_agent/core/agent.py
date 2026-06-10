@@ -73,18 +73,14 @@ def agent_loop() -> None:
             system_prompt = build_system_prompt(model=_config.MODEL)
             store.store_system_prompt(session_id, system_prompt)
 
-    saved_count = len(messages)
     print("Type 'quit' to exit.\n")
 
     while True:
         user_input = input("You: ").strip()
         if not user_input or user_input.lower() in ("quit", "exit"):
-            new_msgs = messages[saved_count:]
-            if new_msgs:
-                store.append_messages(session_id, new_msgs)
             break
 
-        result = run_conversation(user_input, messages, system_prompt)
+        result = run_conversation(user_input, messages, system_prompt, session_id)
         print(f"\nAssistant: {result.final_response}\n")
 
         # 压缩信号处理：创建新 session 链接到旧 session
@@ -94,19 +90,14 @@ def agent_loop() -> None:
             store.append_messages(new_id, result.messages)
             print(f"  [compression] New session {new_id[:8]}... created (parent: {session_id[:8]}...)\n")
             session_id = new_id
-            saved_count = 0
             messages = result.messages
-        else:
-            new_msgs = messages[saved_count:]
-            if new_msgs:
-                store.append_messages(session_id, new_msgs)
-                saved_count = len(messages)
 
 
 def run_conversation(
     user_message: str,
     messages: list[dict[str, Any]],
     system_prompt: str,
+    session_id: str,
 ) -> ConversationResult:
     """同步 agent 循环：压缩守卫 → 模型调用 → 工具执行.
 
@@ -117,6 +108,7 @@ def run_conversation(
     """
     compression_triggered = False
     messages.append({"role": "user", "content": user_message})
+    get_session_store().store_message(session_id, messages[-1])
 
     # ---- Preflight 压缩 ----
     try:
@@ -175,6 +167,7 @@ def run_conversation(
                 )
             msg["tool_calls"] = tool_calls
         messages.append(msg)
+        get_session_store().store_message(session_id, messages[-1])
 
         if not assistant_msg.tool_calls:
             return ConversationResult(
@@ -189,6 +182,7 @@ def run_conversation(
             print(f"  [tool] {name}: {args}")
             output = _registry.execute(name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
+            get_session_store().store_message(session_id, messages[-1])
 
     return ConversationResult(
         final_response="(max iterations reached)",

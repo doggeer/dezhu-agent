@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     COMPRESSION_MODEL: str = "deepseek-v4-flash"
     MODEL_MAX_CONTEXT_TOKENS: int = 65536
 
+    # --- File tool security ---
+    ALLOWED_PATHS: str = "."
+
 
 @lru_cache
 def get_config() -> Settings:

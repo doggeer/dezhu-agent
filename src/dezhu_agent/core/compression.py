@@ -75,9 +75,7 @@ class ContextCompressor:
 
     # ---- Layer 1: 旧工具输出裁剪 ----
 
-    def clear_old_tool_outputs(
-        self, messages: list[dict[str, Any]], keep_recent: int | None = None
-    ) -> None:
+    def clear_old_tool_outputs(self, messages: list[dict[str, Any]], keep_recent: int | None = None) -> None:
         """原地替换过期 tool 消息的 content 为占位符."""
         if keep_recent is None:
             keep_recent = self._config.KEEP_RECENT_TOOL_RESULTS

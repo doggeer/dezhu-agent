@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     HERMES_DIR: str = ".hermes/"
     PROMPT_MAX_FILE_CHARS: int = 20000
 
+    # --- Compression parameters ---
+    COMPRESSION_THRESHOLD: int = 50000
+    PROTECT_FIRST: int = 3
+    KEEP_RECENT_TOOL_RESULTS: int = 3
+    TAIL_TOKEN_BUDGET: int = 20000
+    SUMMARY_MAX_TOKENS: int = 3000
+    SUMMARY_PER_MSG_CHARS: int = 2000
+    COMPRESSION_MIN_SHRINK: float = 0.9
+    COMPRESSION_MODEL: str = "deepseek-v4-flash"
+    MODEL_MAX_CONTEXT_TOKENS: int = 65536
+
 
 @lru_cache
 def get_config() -> Settings:

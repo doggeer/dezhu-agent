@@ -1,4 +1,4 @@
-"""Agent 核心循环 —— 对话管理、工具调用调度."""
+"""Agent 核心循环 —— 对话管理、工具调用调度、上下文压缩."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from dezhu_agent.config import get_config
+from dezhu_agent.core.compression import CompressionStuckError, ContextCompressor
 from dezhu_agent.core.prompt_builder import build_system_prompt
 from dezhu_agent.models.message import ConversationResult
 from dezhu_agent.services.session_store import get_session_store
@@ -16,10 +17,11 @@ _config = get_config()
 _registry = get_tool_registry()
 
 client = OpenAI(base_url=_config.BASE_URL, api_key=_config.API_KEY)
+_compressor = ContextCompressor(_config)
 
 
 def agent_loop() -> None:
-    """交互式 REPL 对话循环, 支持会话持久化."""
+    """交互式 REPL 对话循环, 支持会话持久化与上下文压缩."""
 
     store = get_session_store()
     store.init_db()
@@ -38,7 +40,8 @@ def agent_loop() -> None:
     if sessions:
         print("Recent sessions:")
         for i, s in enumerate(sessions, 1):
-            print(f"  [{i}] {s.id[:4]}  {s.createtime}  {s.model}  {s.message_count} messages")
+            parent = f" <- {s.parent_session_id[:4]}" if s.parent_session_id else ""
+            print(f"  [{i}] {s.id[:4]}  {s.createtime}  {s.model}  {s.message_count} messages{parent}")
         print("  [n] New session")
         print()
 
@@ -84,10 +87,20 @@ def agent_loop() -> None:
         result = run_conversation(user_input, messages, system_prompt)
         print(f"\nAssistant: {result.final_response}\n")
 
-        new_msgs = messages[saved_count:]
-        if new_msgs:
-            store.append_messages(session_id, new_msgs)
-            saved_count = len(messages)
+        # 压缩信号处理：创建新 session 链接到旧 session
+        if result.compression_triggered:
+            new_id = store.create_session("cli", _config.MODEL, parent_session_id=session_id)
+            store.store_system_prompt(new_id, build_system_prompt(model=_config.MODEL))
+            store.append_messages(new_id, result.messages)
+            print(f"  [compression] New session {new_id[:8]}... created (parent: {session_id[:8]}...)\n")
+            session_id = new_id
+            saved_count = 0
+            messages = result.messages
+        else:
+            new_msgs = messages[saved_count:]
+            if new_msgs:
+                store.append_messages(session_id, new_msgs)
+                saved_count = len(messages)
 
 
 def run_conversation(
@@ -95,10 +108,44 @@ def run_conversation(
     messages: list[dict[str, Any]],
     system_prompt: str,
 ) -> ConversationResult:
-    """同步 agent 循环: 调用模型, 执行工具, 回传结果, 反复直到模型不再请求工具."""
+    """同步 agent 循环：压缩守卫 → 模型调用 → 工具执行.
+
+    集成上下文压缩：
+    - Preflight: 进循环前检查 token，超阈值则执行完整压缩
+    - 循环内: 每轮清理旧工具输出，仍超阈值则执行完整压缩
+    - CompressionStuckError: 压缩无效时早退
+    """
+    compression_triggered = False
     messages.append({"role": "user", "content": user_message})
 
+    # ---- Preflight 压缩 ----
+    try:
+        if _compressor.estimate_tokens(messages) > _config.COMPRESSION_THRESHOLD:
+            messages, ok = _compressor.compress(messages)
+            compression_triggered = ok
+    except CompressionStuckError:
+        return ConversationResult(
+            final_response="会话上下文已满，无法继续压缩。请新开会话。",
+            messages=messages,
+            compression_triggered=True,
+        )
+
     for _ in range(_config.MAX_ITERATIONS):
+        # ---- 循环内 Layer 1: 清理旧工具输出 ----
+        _compressor.clear_old_tool_outputs(messages)
+
+        # ---- 循环内 Layer 2+3: 仍超阈值则完整压缩 ----
+        try:
+            if _compressor.estimate_tokens(messages) > _config.COMPRESSION_THRESHOLD:
+                messages, ok = _compressor.compress(messages)
+                compression_triggered = compression_triggered or ok
+        except CompressionStuckError:
+            return ConversationResult(
+                final_response="会话上下文已满，无法继续压缩。请新开会话。",
+                messages=messages,
+                compression_triggered=True,
+            )
+
         api_messages = [{"role": "system", "content": system_prompt}, *messages]
 
         response = client.chat.completions.create(
@@ -133,6 +180,7 @@ def run_conversation(
             return ConversationResult(
                 final_response=assistant_msg.content or "",
                 messages=messages,
+                compression_triggered=compression_triggered,
             )
 
         for tc in assistant_msg.tool_calls:
@@ -145,4 +193,5 @@ def run_conversation(
     return ConversationResult(
         final_response="(max iterations reached)",
         messages=messages,
+        compression_triggered=compression_triggered,
     )

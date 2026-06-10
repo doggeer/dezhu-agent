@@ -12,3 +12,4 @@ class ConversationResult(BaseModel):
 
     final_response: str
     messages: list[dict[str, Any]]
+    compression_triggered: bool = False

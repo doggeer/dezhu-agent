@@ -9,16 +9,15 @@ import pytest
 from dezhu_agent.config import get_config
 from dezhu_agent.core.prompt_builder import (
     DEFAULT_SOUL,
-    build_system_prompt,
     _build_identity,
     _build_memory,
-    _build_project_context,
     _build_skills,
     _build_timestamp_info,
     _find_git_root,
     _find_project_config_file,
     _get_hermes_dir,
     _read_and_truncate,
+    build_system_prompt,
 )
 
 

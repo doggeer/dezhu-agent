@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1",
     "openai==2.41.0",
     "httpx[socks]>=0.28.1",
+    "tiktoken>=0.7",
 ]
 
 [tool.uv]
@@ -48,7 +49,7 @@ select = [
     "SIM", # flake8-simplify
     "RUF", # ruff-specific
 ]
-ignore = ["RUF001"]  # 允许中文全角标点
+ignore = ["RUF001", "RUF002", "RUF003"]  # 允许中文全角标点
 
 [tool.ruff.lint.isort]
 known-first-party = ["dezhu_agent"]

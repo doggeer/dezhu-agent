@@ -50,7 +50,8 @@ class SessionStore:
                     source TEXT NOT NULL DEFAULT 'cli',
                     model TEXT NOT NULL,
                     createtime TEXT NOT NULL,
-                    system_prompt TEXT NOT NULL DEFAULT ''
+                    system_prompt TEXT NOT NULL DEFAULT '',
+                    parent_session_id TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -70,14 +71,16 @@ class SessionStore:
             cols = {row[1] for row in conn.execute("PRAGMA table_info('sessions')").fetchall()}
             if "system_prompt" not in cols:
                 conn.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
+            if "parent_session_id" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
 
-    def create_session(self, source: str, model: str) -> str:
+    def create_session(self, source: str, model: str, parent_session_id: str | None = None) -> str:
         session_id = uuid.uuid4().hex
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, source, model, createtime) VALUES (?, ?, ?, ?)",
-                (session_id, source, model, now),
+                "INSERT INTO sessions (id, source, model, createtime, parent_session_id) VALUES (?, ?, ?, ?, ?)",
+                (session_id, source, model, now, parent_session_id),
             )
         return session_id
 
@@ -85,7 +88,7 @@ class SessionStore:
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT s.id, s.source, s.model, s.createtime, COUNT(m.id) as message_count
+                SELECT s.id, s.source, s.model, s.createtime, s.parent_session_id, COUNT(m.id) as message_count
                 FROM sessions s
                 LEFT JOIN messages m ON s.id = m.session_id
                 GROUP BY s.id
@@ -101,6 +104,7 @@ class SessionStore:
                 model=row["model"],
                 createtime=row["createtime"],
                 message_count=row["message_count"],
+                parent_session_id=row["parent_session_id"],
             )
             for row in rows
         ]

@@ -13,3 +13,4 @@ class SessionInfo(BaseModel):
     model: str
     createtime: str
     message_count: int = 0
+    parent_session_id: str | None = None

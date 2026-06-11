@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     PROMPT_MAX_FILE_CHARS: int = 20000
 
     # --- Compression parameters ---
-    COMPRESSION_THRESHOLD: int = 50000
+    COMPRESSION_THRESHOLD: int = 55000
     PROTECT_FIRST: int = 3
     KEEP_RECENT_TOOL_RESULTS: int = 3
     TAIL_TOKEN_BUDGET: int = 20000

@@ -51,10 +51,15 @@ class ToolRegistry:
             return tool_error(f"Tool execution failed: {exc}")
 
     def scan(self, package_name: str) -> None:
-        """扫描指定包下所有模块, 自动导入以触发 @register_tool 装饰器的注册."""
+        """扫描指定包下所有模块, 自动导入以触发 @register_tool 装饰器的注册.
+
+        仅吞掉顶层包不存在的 ModuleNotFoundError，内部模块的导入错误会正常抛出，
+        便于开发时尽早发现工具模块的语法/导入问题。
+        """
         try:
             package = importlib.import_module(package_name)
         except ModuleNotFoundError:
+            # 顶层包不存在 —— 没有注册任何工具，静默返回
             return
 
         if not hasattr(package, "__path__"):

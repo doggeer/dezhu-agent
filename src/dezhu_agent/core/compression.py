@@ -1,12 +1,13 @@
-"""上下文压缩模块 —— 三层递进压缩：Layer 1 清旧工具输出 → Layer 2 找边界 → Layer 3 LLM 摘要."""
+"""上下文压缩模块 —— 三层递进压缩 + 自适应 token 校准."""
 
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import tiktoken
-from openai import OpenAI
+from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 from dezhu_agent.config import Settings
 
@@ -29,21 +30,95 @@ class CompressionStuckError(RuntimeError):
         super().__init__(f"Compression stuck: {before} -> {after} tokens (threshold not met)")
 
 
+# ---- API retry for summarize ----
+_RETRYABLE = (RateLimitError, APITimeoutError, APIError)
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = 2.0
+
+
+def _summarize_with_retry(
+    client: OpenAI,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+) -> tuple[str, int]:
+    """调用 LLM 生成摘要, 返回 (内容, prompt_tokens)."""
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens,
+            )
+            content = response.choices[0].message.content or ""
+            actual_tokens = response.usage.prompt_tokens if response.usage else 0
+            return content, actual_tokens
+        except _RETRYABLE as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_BACKOFF**attempt)
+    raise last_exc  # type: ignore[misc]
+
+
 class ContextCompressor:
-    """上下文压缩器，按 Layer 1 -> Layer 2 -> Layer 3 递进压缩消息列表."""
+    """上下文压缩器，按 Layer 1 -> Layer 2 -> Layer 3 递进压缩消息列表.
+
+    内置自适应 token 校准：每次 LLM 调用后用实际 prompt_tokens 修正估算系数 (EMA).
+    """
+
+    # 校准参数
+    _CALIBRATION_ALPHA: float = 0.1  # EMA 平滑系数 (越小越稳定)
+    _CALIBRATION_MIN_TOKENS: int = 50  # 消息太短不校准
+    _CORRECTION_MIN: float = 0.5
+    _CORRECTION_MAX: float = 2.0
 
     def __init__(self, config: Settings) -> None:
         self._config = config
+        # NOTE: cl100k_base is GPT-4 tokenizer; DeepSeek tokenizer differs.
+        # The adaptive calibration below compensates for systematic bias over time.
         self._encoding = tiktoken.get_encoding("cl100k_base")
-        self._summary_client = OpenAI(
+        self._client = OpenAI(
             base_url=config.BASE_URL,
             api_key=config.API_KEY,
         )
+        # 自适应校准状态
+        self._correction_factor: float = 1.0
+        self._calibration_count: int = 0
+
+    # ---- 自适应校准 ----
+
+    def calibrate(self, estimated_tokens: int, actual_tokens: int) -> None:
+        """用一次 API 调用的实际 token 数校准估算系数 (EMA).
+
+        仅在消息量足够时校准，且修正系数限制在 [0.5, 2.0] 防止异常值。
+        """
+        if estimated_tokens < self._CALIBRATION_MIN_TOKENS or actual_tokens <= 0:
+            return
+        ratio = actual_tokens / estimated_tokens
+        alpha = self._CALIBRATION_ALPHA
+        self._correction_factor = alpha * ratio + (1 - alpha) * self._correction_factor
+        self._correction_factor = max(self._CORRECTION_MIN, min(self._CORRECTION_MAX, self._correction_factor))
+        self._calibration_count += 1
+
+    @property
+    def correction_factor(self) -> float:
+        """当前校准系数 (1.0 = 无修正)."""
+        return self._correction_factor
 
     # ---- Token 估算 ----
 
     def estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """估算消息列表的 token 数（cl100k_base encoding）."""
+        """估算消息列表的 token 数 (cl100k_base + 自适应校准)."""
+        raw = self._raw_estimate(messages)
+        return max(1, int(raw * self._correction_factor))
+
+    def _raw_estimate(self, messages: list[dict[str, Any]]) -> int:
+        """原始 cl100k_base token 估算 (不经校准)."""
         tokens = 0
         for msg in messages:
             tokens += 3
@@ -98,11 +173,7 @@ class ContextCompressor:
         protect_first: int | None = None,
         tail_budget: int | None = None,
     ) -> tuple[int, int] | None:
-        """返回 (head_end, tail_start) 或 None.
-
-        head_end 不含，tail_start 含，中间段 [head_end:tail_start) 将被摘要替代.
-        边界自动对齐：跳过 tool 消息，确保 assistant.tool_calls 与其 tool 响应始终同区.
-        """
+        """返回 (head_end, tail_start) 或 None."""
         if protect_first is None:
             protect_first = self._config.PROTECT_FIRST
         if tail_budget is None:
@@ -140,7 +211,7 @@ class ContextCompressor:
         middle: list[dict[str, Any]],
         old_summary: str | None = None,
     ) -> str:
-        """调用辅助模型生成结构化摘要."""
+        """调用辅助模型生成结构化摘要, 并校准 token 估算."""
         middle_text = self._format_messages_for_summary(middle)
 
         if old_summary:
@@ -166,16 +237,24 @@ class ContextCompressor:
                 "## Files Modified\n...\n\n## Next Steps\n..."
             )
 
-        response = self._summary_client.chat.completions.create(
-            model=self._config.COMPRESSION_MODEL,
-            messages=[
+        # 估算 summary 请求的 token 数用于校准
+        estimated_input = self._raw_estimate(
+            [
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=self._config.SUMMARY_MAX_TOKENS,
+            ]
+        )
+        content, actual_tokens = _summarize_with_retry(
+            self._client,
+            self._config.COMPRESSION_MODEL,
+            SUMMARY_SYSTEM_PROMPT,
+            user_prompt,
+            self._config.SUMMARY_MAX_TOKENS,
         )
 
-        content = response.choices[0].message.content or ""
+        # 自适应校准
+        self.calibrate(estimated_input, actual_tokens)
+
         if not content.startswith(SUMMARY_PREFIX):
             content = f"{SUMMARY_PREFIX}\n\n{content}"
         return content

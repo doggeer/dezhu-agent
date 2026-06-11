@@ -2,19 +2,63 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from typing import Any
 
 from dezhu_agent.models.tool import BaseTool, tool_error
 from dezhu_agent.utils.tool_decorator import register_tool
 
-BLOCKED_COMMANDS = [
-    "rm -rf /",
-    "mkfs",
-    "dd if=",
-    "shutdown",
-    "reboot",
+# 黑名单命令 (按第一个 token 匹配)
+_BLOCKED_COMMANDS = frozenset(
+    {
+        "mkfs",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        "init",
+    }
+)
+
+# 危险子命令模式: (命令, 参数前缀)
+_BLOCKED_PATTERNS: list[tuple[str, str]] = [
+    ("rm", "-rf"),
+    ("rm", "-r"),
+    ("dd", "if="),
 ]
+
+
+def _is_blocked(cmd_str: str) -> str | None:
+    """检查命令是否在黑名单中，返回拦截原因或 None."""
+    try:
+        tokens = shlex.split(cmd_str)
+    except ValueError:
+        # 无法解析（如未闭合引号），为安全起见拦截
+        return "unparseable command"
+
+    if not tokens:
+        return None
+
+    base = tokens[0]
+
+    # 检查基础命令黑名单
+    if base in _BLOCKED_COMMANDS:
+        return base
+
+    # 检查危险子命令模式
+    for blocked_cmd, flag_prefix in _BLOCKED_PATTERNS:
+        if base == blocked_cmd:
+            for t in tokens[1:]:
+                if t.startswith(flag_prefix):
+                    # 额外检查: rm -rf 目标是否包含 / 或 /*
+                    if blocked_cmd == "rm":
+                        for t2 in tokens[1:]:
+                            if t2 in ("/", "/*") or t2.startswith("/ "):
+                                return f"rm targeting root: {t2}"
+                    return f"{blocked_cmd} {flag_prefix}..."
+
+    return None
 
 
 @register_tool(
@@ -37,9 +81,9 @@ class TerminalTool(BaseTool):
     def execute(self, **kwargs: Any) -> str:
         command: str = kwargs.get("command", "")
 
-        for blocked in BLOCKED_COMMANDS:
-            if blocked in command:
-                return tool_error(f"Blocked: {blocked}")
+        reason = _is_blocked(command)
+        if reason:
+            return tool_error(f"Blocked: {reason}")
 
         try:
             result = subprocess.run(

@@ -10,9 +10,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 from dezhu_agent.config import get_config
+from dezhu_agent.models.message import Message
 from dezhu_agent.models.session import SessionInfo
 
 
@@ -67,7 +67,7 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                 """
             )
-            # 兼容旧表迁移: 如果 system_prompt 列不存在则添加
+            # 兼容旧表迁移
             cols = {row[1] for row in conn.execute("PRAGMA table_info('sessions')").fetchall()}
             if "system_prompt" not in cols:
                 conn.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
@@ -127,23 +127,24 @@ class SessionStore:
         prompt = row["system_prompt"]
         return prompt if prompt else None
 
-    def load_messages(self, session_id: str) -> list[dict[str, Any]]:
+    def load_messages(self, session_id: str) -> list[Message]:
+        """加载会话的所有消息, 返回 Message 模型列表."""
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY id",
                 (session_id,),
             ).fetchall()
-        messages: list[dict[str, Any]] = []
-        for row in rows:
-            msg: dict[str, Any] = {"role": row["role"], "content": row["content"]}
-            if row["tool_calls"]:
-                msg["tool_calls"] = json.loads(row["tool_calls"])
-            if row["tool_call_id"]:
-                msg["tool_call_id"] = row["tool_call_id"]
-            messages.append(msg)
-        return messages
+        return [
+            Message(
+                role=row["role"],
+                content=row["content"] or "",
+                tool_calls=json.loads(row["tool_calls"]) if row["tool_calls"] else None,
+                tool_call_id=row["tool_call_id"],
+            )
+            for row in rows
+        ]
 
-    def store_message(self, session_id: str, msg: dict[str, Any]) -> int:
+    def store_message(self, session_id: str, msg: Message) -> int:
         """插入单条消息并返回自增 ID."""
         with self._get_conn() as conn:
             cursor = conn.execute(
@@ -151,24 +152,25 @@ class SessionStore:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     session_id,
-                    msg["role"],
-                    msg.get("content"),
-                    json.dumps(msg["tool_calls"]) if msg.get("tool_calls") else None,
-                    msg.get("tool_call_id"),
+                    msg.role,
+                    msg.content or None,
+                    json.dumps(msg.tool_calls) if msg.tool_calls else None,
+                    msg.tool_call_id,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
             row_id = cursor.lastrowid
             return row_id if row_id is not None else -1
 
-    def append_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+    def append_messages(self, session_id: str, messages: list[Message]) -> None:
+        """批量插入消息."""
         rows = [
             (
                 session_id,
-                msg["role"],
-                msg.get("content"),
-                json.dumps(msg["tool_calls"]) if msg.get("tool_calls") else None,
-                msg.get("tool_call_id"),
+                msg.role,
+                msg.content or None,
+                json.dumps(msg.tool_calls) if msg.tool_calls else None,
+                msg.tool_call_id,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
             for msg in messages

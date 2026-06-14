@@ -176,3 +176,35 @@ uv run pre-commit install
 | ruff | >=0.11 | Lint & 格式化 |
 | mypy | >=1 | 类型检查 |
 | pre-commit | >=4 | Git 钩子 |
+
+## 开发工作流
+
+每次代码修改完成后，Agent **必须自动**执行以下流程，无需用户催促：
+
+### 1. 自检（修改后立即执行）
+
+```bash
+uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/ && uv run pytest
+```
+
+### 2. 修复
+
+自检失败时，分析错误并修复代码，然后重新自检，直到全部通过。
+
+### 3. 自动提交
+
+自检全部通过后，执行 Git 提交：
+
+- `git add` 暂存所有本次修改的文件（不包含无关变更）
+- 生成简洁的中文 commit message，格式: `模块: 做了什么`
+- 执行 `git commit`
+
+### 4. 跳过自检的情况
+
+以下情况可跳过自检直接提交：
+- 仅修改 AGENTS.md 自身
+- 仅修改文档（README、注释、docstring），且未涉及任何逻辑变更
+
+### 5. 分支命名
+
+新功能使用 `codex/` 前缀创建分支: `git checkout -b codex/功能简述`

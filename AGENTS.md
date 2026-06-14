@@ -179,19 +179,53 @@ uv run pre-commit install
 
 ## 开发工作流
 
-每次代码修改完成后，Agent **必须自动**执行以下流程，无需用户催促：
+Agent 实现功能的完整流程如下。所有步骤均由 Agent 自动执行，无需用户催促。
 
-### 1. 自检（修改后立即执行）
+### 1. 理解需求 → 阅读代码
+
+- 明确需求目标：做什么、在哪个模块、预期行为
+- 阅读相关现有代码，理解模块职责、数据流和调用关系
+- 确定实现方案：新建哪些文件、修改哪些文件、新增哪些模型
+
+### 2. 实现功能
+
+按照项目规范编写代码：
+
+- **生产代码**: 严格遵循 AGENTS.md 中的开发规范：
+  - 结构化数据使用 Pydantic 模型（放在 `models/`），禁止裸 dict
+  - 重复 JSON 序列化提取为语义化工具函数
+  - 服务用 `services/` 目录 + `@lru_cache` 单例模式
+  - 数据库操作使用参数化查询、WAL 模式、context manager 管理连接
+- **测试代码**: 与生产代码同步编写，放在 `tests/` 目录下：
+  - 覆盖正常路径和边界情况
+  - 覆盖错误路径
+  - 测试文件命名: `test_{模块名}.py`
+  - 使用项目 `conftest.py` 中的已有 fixtures
+
+### 3. 自检
+
+实现完成后立即执行完整检查链：
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/ && uv run pytest
 ```
 
-### 2. 修复
+各检查项含义：
+- `ruff check`: 代码风格、潜在错误、import 排序
+- `ruff format --check`: 代码格式一致性
+- `mypy`: 类型正确性（strict 模式）
+- `pytest`: 所有测试（含新增和已有）必须通过
 
-自检失败时，分析错误并修复代码，然后重新自检，直到全部通过。
+### 4. 修复（如自检失败）
 
-### 3. 自动提交
+自检失败时：
+
+- 分析每个失败项的错误信息，定位根本原因
+- 修复代码（生产代码或测试代码）
+- 重新执行步骤 3，直到全部通过
+- 如果修复涉及已有测试失败，优先保证不破坏现有行为
+
+### 5. 自动提交
 
 自检全部通过后，执行 Git 提交：
 
@@ -199,12 +233,12 @@ uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv ru
 - 生成简洁的中文 commit message，格式: `模块: 做了什么`
 - 执行 `git commit`
 
-### 4. 跳过自检的情况
+### 6. 跳过自检的情况
 
 以下情况可跳过自检直接提交：
 - 仅修改 AGENTS.md 自身
 - 仅修改文档（README、注释、docstring），且未涉及任何逻辑变更
 
-### 5. 分支命名
+### 7. 分支命名
 
 新功能使用 `codex/` 前缀创建分支: `git checkout -b codex/功能简述`

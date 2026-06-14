@@ -10,6 +10,7 @@ from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 from dezhu_agent.config import Settings, get_config
 from dezhu_agent.core.compression import CompressionStuckError, ContextCompressor
+from dezhu_agent.core.task_state import get_task_state_manager, set_current_session_id
 from dezhu_agent.core.prompt_builder import build_system_prompt
 from dezhu_agent.models.message import ConversationResult, Message
 from dezhu_agent.services.session_store import get_session_store
@@ -159,10 +160,14 @@ def run_conversation(
     messages.append({"role": "user", "content": user_message})
     get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
 
+    # ---- Task State 初始化 ----
+    set_current_session_id(session_id)
+    task_state = get_task_state_manager().get_or_create(session_id)
+
     # ---- Preflight 压缩 ----
     try:
         if compressor.estimate_tokens(messages) > config.COMPRESSION_THRESHOLD:
-            messages, ok = compressor.compress(messages)
+            messages, ok = compressor.compress(messages, is_active=task_state.is_active)
             compression_triggered = ok
     except CompressionStuckError:
         return ConversationResult(
@@ -172,13 +177,15 @@ def run_conversation(
         )
 
     for _ in range(config.MAX_ITERATIONS):
+        task_state.increment_round()
+
         # ---- 循环内 Layer 1: 清理旧工具输出 ----
-        compressor.clear_old_tool_outputs(messages)
+        compressor.clear_old_tool_outputs(messages, is_active=task_state.is_active)
 
         # ---- 循环内 Layer 2+3: 仍超阈值则完整压缩 ----
         try:
             if compressor.estimate_tokens(messages) > config.COMPRESSION_THRESHOLD:
-                messages, ok = compressor.compress(messages)
+                messages, ok = compressor.compress(messages, is_active=task_state.is_active)
                 compression_triggered = compression_triggered or ok
         except CompressionStuckError:
             return ConversationResult(
@@ -187,7 +194,12 @@ def run_conversation(
                 compression_triggered=True,
             )
 
-        api_messages = [{"role": "system", "content": system_prompt}, *messages]
+        # 活跃任务期间: 将 task_state 拼到 system prompt 末尾
+        augmented_system = system_prompt
+        if task_state.is_active:
+            augmented_system = system_prompt + "\n\n" + task_state.render()
+
+        api_messages = [{"role": "system", "content": augmented_system}, *messages]
 
         response = _call_with_retry(
             client,
@@ -224,6 +236,16 @@ def run_conversation(
         get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
 
         if not assistant_msg.tool_calls:
+            # 模型返回最终回复, 但任务活跃且未完成: 注入提醒
+            if task_state.is_active and not task_state.is_completed:
+                reminder = (
+                    "[System Reminder] You have an active task "
+                    f"(goal: '{task_state.goal}') but replied without marking it as completed. "
+                    "Use todo_update to mark remaining steps as completed, "
+                    "or explicitly mark the task as done."
+                )
+                messages.append({"role": "user", "content": reminder})
+                get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
             return ConversationResult(
                 final_response=assistant_msg.content or "",
                 messages=messages,
@@ -236,6 +258,12 @@ def run_conversation(
             print(f"  [tool] {name}: {args}")
             output = registry.execute(name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
+            get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
+
+        # ---- 轮次提醒: 超过阈值轮未更新 TODO 时提醒 ----
+        reminder = task_state.check_reminder(config.TODO_REMINDER_ROUNDS)
+        if reminder:
+            messages.append({"role": "user", "content": reminder})
             get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
 
     return ConversationResult(

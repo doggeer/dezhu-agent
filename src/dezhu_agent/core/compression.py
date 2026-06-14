@@ -65,10 +65,25 @@ def _summarize_with_retry(
     raise last_exc  # type: ignore[misc]
 
 
-class ContextCompressor:
-    """上下文压缩器，按 Layer 1 -> Layer 2 -> Layer 3 递进压缩消息列表.
+# ---- 延迟加载 encoding ----
+# tiktoken.get_encoding() 首次调用需从 Azure blob 下载 ~1.8MB encoding 文件,
+# 在国内网络下可能耗时数秒。延迟到首次 estimate_tokens 时加载, 避免阻塞 __init__.
+_ENCODING: tiktoken.Encoding | None = None
 
-    内置自适应 token 校准：每次 LLM 调用后用实际 prompt_tokens 修正估算系数 (EMA).
+
+def _get_encoding() -> tiktoken.Encoding:
+    global _ENCODING
+    if _ENCODING is None:
+        # NOTE: cl100k_base is GPT-4 tokenizer; DeepSeek tokenizer differs.
+        # The adaptive calibration below compensates for systematic bias over time.
+        _ENCODING = tiktoken.get_encoding("cl100k_base")
+    return _ENCODING
+
+
+class ContextCompressor:
+    """上下文压缩器, 按 Layer 1 -> Layer 2 -> Layer 3 递进压缩消息列表.
+
+    内置自适应 token 校准: 每次 LLM 调用后用实际 prompt_tokens 修正估算系数 (EMA).
     """
 
     # 校准参数
@@ -79,9 +94,6 @@ class ContextCompressor:
 
     def __init__(self, config: Settings) -> None:
         self._config = config
-        # NOTE: cl100k_base is GPT-4 tokenizer; DeepSeek tokenizer differs.
-        # The adaptive calibration below compensates for systematic bias over time.
-        self._encoding = tiktoken.get_encoding("cl100k_base")
         self._client = OpenAI(
             base_url=config.BASE_URL,
             api_key=config.API_KEY,
@@ -120,32 +132,34 @@ class ContextCompressor:
     def _raw_estimate(self, messages: list[dict[str, Any]]) -> int:
         """原始 cl100k_base token 估算 (不经校准)."""
         tokens = 0
+        enc = _get_encoding()
         for msg in messages:
             tokens += 3
             content = msg.get("content")
             if content:
-                tokens += len(self._encoding.encode(str(content)))
+                tokens += len(enc.encode(str(content)))
             tool_calls = msg.get("tool_calls")
             if tool_calls:
-                tokens += len(self._encoding.encode(json.dumps(tool_calls)))
+                tokens += len(enc.encode(json.dumps(tool_calls)))
             tool_call_id = msg.get("tool_call_id")
             if tool_call_id:
-                tokens += len(self._encoding.encode(str(tool_call_id)))
+                tokens += len(enc.encode(str(tool_call_id)))
         tokens += 3
         return tokens
 
     def _estimate_single(self, msg: dict[str, Any]) -> int:
         """估算单条消息的 token 数."""
         tokens = 3
+        enc = _get_encoding()
         content = msg.get("content")
         if content:
-            tokens += len(self._encoding.encode(str(content)))
+            tokens += len(enc.encode(str(content)))
         tool_calls = msg.get("tool_calls")
         if tool_calls:
-            tokens += len(self._encoding.encode(json.dumps(tool_calls)))
+            tokens += len(enc.encode(json.dumps(tool_calls)))
         tool_call_id = msg.get("tool_call_id")
         if tool_call_id:
-            tokens += len(self._encoding.encode(str(tool_call_id)))
+            tokens += len(enc.encode(str(tool_call_id)))
         return tokens
 
     # ---- Layer 1: 旧工具输出裁剪 ----

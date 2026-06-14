@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # --- File tool security ---
     ALLOWED_PATHS: str = "."
 
+    # --- Task ToDo ---
+    TODO_REMINDER_ROUNDS: int = 3
+
 
 @lru_cache
 def get_config() -> Settings:

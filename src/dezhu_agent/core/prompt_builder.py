@@ -56,7 +56,15 @@ def _build_identity() -> str:
 
 # ---- Layer 2: 行为指导 ----
 def _build_behavior_guidance() -> str:
-    return ""
+    return (
+        "# Task Management\n"
+        "You have tools for managing multi-step tasks. For complex work that requires multiple steps:\n"
+        "1. Use `task_set_goal` to define the goal\n"
+        "2. Use `todo_write` to list concrete execution steps\n"
+        "3. Use `todo_update` to mark each step as in_progress → completed (with a brief result)\n"
+        "4. If you need to adjust, call `todo_write` again to replan\n"
+        "This keeps your task tracking live and accurate."
+    )
 
 
 # ---- Layer 3: 记忆 ----

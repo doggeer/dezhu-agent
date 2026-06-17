@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from dezhu_agent.config import Settings
@@ -12,22 +13,30 @@ _BAR_WIDTH = 20
 _NEAR_LIMIT_RATIO = 0.9
 
 
+class CommandResult(Enum):
+    """handle_command 的三态返回值."""
+
+    QUIT = "quit"
+    HANDLED = "handled"
+    PASS = "pass"
+
+
 def handle_command(
     user_input: str,
     messages: list[dict[str, Any]],
     compressor: ContextCompressor,
     config: Settings,
-) -> bool:
-    """处理内置命令, 返回 True 表示 agent loop 应退出."""
+) -> CommandResult:
+    """处理内置命令, 返回 CommandResult 告诉 agent_loop 下一步动作."""
     cmd = user_input.strip().lower()
 
     # 退出命令 (可带 / 前缀)
     if cmd in ("quit", "exit", "/quit", "/exit"):
-        return True
+        return CommandResult.QUIT
 
     # 空输入
     if not cmd:
-        return True
+        return CommandResult.QUIT
 
     # Slash 命令
     if cmd.startswith("/"):
@@ -40,8 +49,9 @@ def handle_command(
         else:
             print(f"Unknown command: {cmd}  (try /help)")
         print()
+        return CommandResult.HANDLED
 
-    return False
+    return CommandResult.PASS
 
 
 def _cmd_messages(
@@ -99,15 +109,15 @@ def _cmd_usages(
     if estimated < threshold:
         status = "OK (well below threshold)"
     elif estimated < max_context * _NEAR_LIMIT_RATIO:
-        status = "\u26a0\ufe0f Compression needed"
+        status = "⚠️ Compression needed"
     else:
-        status = "\u26a0\ufe0f Near limit"
+        status = "⚠️ Near limit"
 
     bar_used = int(pct / 100 * _BAR_WIDTH)
     bar_threshold = int(threshold / max_context * _BAR_WIDTH) if max_context else 0
 
-    usage_bar = "#" * bar_used + "\u00b7" * (_BAR_WIDTH - bar_used)
-    threshold_bar = "=" * bar_threshold + "\u00b7" * (_BAR_WIDTH - bar_threshold)
+    usage_bar = "#" * bar_used + "·" * (_BAR_WIDTH - bar_used)
+    threshold_bar = "=" * bar_threshold + "·" * (_BAR_WIDTH - bar_threshold)
 
     print("=== Context Usage ===")
     print(f"  Estimate:   {estimated:,} / {max_context:,} tokens  {pct:.1f}%  [{usage_bar}]")
@@ -117,7 +127,7 @@ def _cmd_usages(
 
 def _cmd_help() -> None:
     """打印帮助信息."""
-    print("=== \u5fb7\u67f1Agent (dezhu-agent) ===")
+    print("=== 德柱Agent (dezhu-agent) ===")
     print("Python AI Agent, powered by DeepSeek.")
     print()
     print("Commands:")

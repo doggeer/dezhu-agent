@@ -10,7 +10,7 @@ from dezhu_agent.config import Settings, get_config
 from dezhu_agent.core.compression import CompressionStuckError, ContextCompressor
 from dezhu_agent.core.model_client import ModelClient
 from dezhu_agent.core.prompt_builder import build_system_prompt
-from dezhu_agent.core.slash_commands import handle_command
+from dezhu_agent.core.slash_commands import CommandResult, handle_command
 from dezhu_agent.core.task_state import get_task_state_manager, set_current_session_id
 from dezhu_agent.models.error import ErrorCategory
 from dezhu_agent.models.message import ConversationResult, Message
@@ -86,9 +86,11 @@ def agent_loop() -> None:
 
     while True:
         user_input = input("You: ").strip()
-        should_quit = handle_command(user_input, messages, compressor, config)
-        if should_quit:
+        cmd_result = handle_command(user_input, messages, compressor, config)
+        if cmd_result == CommandResult.QUIT:
             break
+        if cmd_result == CommandResult.HANDLED:
+            continue
 
         # ---- 主模型恢复 ----
         model_client.try_recover_main()

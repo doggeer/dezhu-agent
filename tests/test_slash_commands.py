@@ -8,7 +8,13 @@ import pytest
 
 from dezhu_agent.config import Settings
 from dezhu_agent.core.compression import ContextCompressor
-from dezhu_agent.core.slash_commands import _cmd_help, _cmd_messages, _cmd_usages, handle_command
+from dezhu_agent.core.slash_commands import (
+    CommandResult,
+    _cmd_help,
+    _cmd_messages,
+    _cmd_usages,
+    handle_command,
+)
 
 
 @pytest.fixture
@@ -25,32 +31,36 @@ def config() -> Settings:
 
 
 class TestHandleCommand:
-    def test_empty_input_returns_true(self, compressor: ContextCompressor, config: Settings) -> None:
-        assert handle_command("", [], compressor, config) is True
+    """handle_command 路由测试."""
 
-    def test_quit_returns_true(self, compressor: ContextCompressor, config: Settings) -> None:
-        assert handle_command("quit", [], compressor, config) is True
-        assert handle_command("exit", [], compressor, config) is True
-        assert handle_command("/quit", [], compressor, config) is True
-        assert handle_command("/exit", [], compressor, config) is True
+    def test_empty_input_is_quit(self, compressor: ContextCompressor, config: Settings) -> None:
+        assert handle_command("", [], compressor, config) == CommandResult.QUIT
 
-    def test_slash_messages_returns_false(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
-        assert handle_command("/messages", [], compressor, config) is False
+    def test_quit_is_quit(self, compressor: ContextCompressor, config: Settings) -> None:
+        assert handle_command("quit", [], compressor, config) == CommandResult.QUIT
+        assert handle_command("exit", [], compressor, config) == CommandResult.QUIT
+        assert handle_command("/quit", [], compressor, config) == CommandResult.QUIT
+        assert handle_command("/exit", [], compressor, config) == CommandResult.QUIT
 
-    def test_slash_usages_returns_false(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
-        assert handle_command("/usages", [], compressor, config) is False
+    def test_slash_messages_is_handled(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
+        assert handle_command("/messages", [], compressor, config) == CommandResult.HANDLED
 
-    def test_slash_help_returns_false(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
-        assert handle_command("/help", [], compressor, config) is False
+    def test_slash_usages_is_handled(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
+        assert handle_command("/usages", [], compressor, config) == CommandResult.HANDLED
 
-    def test_unknown_slash_returns_false(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
-        assert handle_command("/unknown", [], compressor, config) is False
+    def test_slash_help_is_handled(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
+        assert handle_command("/help", [], compressor, config) == CommandResult.HANDLED
 
-    def test_regular_input_returns_false(self, compressor: ContextCompressor, config: Settings) -> None:
-        assert handle_command("hello world", [], compressor, config) is False
+    def test_unknown_slash_is_handled(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
+        assert handle_command("/unknown", [], compressor, config) == CommandResult.HANDLED
+
+    def test_regular_input_is_pass(self, compressor: ContextCompressor, config: Settings) -> None:
+        assert handle_command("hello world", [], compressor, config) == CommandResult.PASS
 
 
 class TestCmdMessages:
+    """_cmd_messages 输出测试."""
+
     def test_empty_messages(self, compressor: ContextCompressor, capsys: Any) -> None:
         _cmd_messages([], compressor)
         captured = capsys.readouterr()
@@ -102,6 +112,8 @@ class TestCmdMessages:
 
 
 class TestCmdUsages:
+    """_cmd_usages 输出测试."""
+
     def test_ok_status(self, compressor: ContextCompressor, config: Settings, capsys: Any) -> None:
         config.MODEL_MAX_CONTEXT_TOKENS = 65536
         config.COMPRESSION_THRESHOLD = 55000
@@ -135,6 +147,8 @@ class TestCmdUsages:
 
 
 class TestCmdHelp:
+    """_cmd_help 输出测试."""
+
     def test_contains_expected_sections(self, capsys: Any) -> None:
         _cmd_help()
         captured = capsys.readouterr()

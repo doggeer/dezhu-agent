@@ -10,6 +10,7 @@ from dezhu_agent.config import Settings, get_config
 from dezhu_agent.core.compression import CompressionStuckError, ContextCompressor
 from dezhu_agent.core.model_client import ModelClient
 from dezhu_agent.core.prompt_builder import build_system_prompt
+from dezhu_agent.core.slash_commands import handle_command
 from dezhu_agent.core.task_state import get_task_state_manager, set_current_session_id
 from dezhu_agent.models.error import ErrorCategory
 from dezhu_agent.models.message import ConversationResult, Message
@@ -81,11 +82,12 @@ def agent_loop() -> None:
             system_prompt = build_system_prompt(model=config.MODEL)
             store.store_system_prompt(session_id, system_prompt)
 
-    print("Type 'quit' to exit.\n")
+    print("Type /help for commands, quit to exit.\n")
 
     while True:
         user_input = input("You: ").strip()
-        if not user_input or user_input.lower() in ("quit", "exit"):
+        should_quit = handle_command(user_input, messages, compressor, config)
+        if should_quit:
             break
 
         # ---- 主模型恢复 ----
@@ -272,6 +274,7 @@ def run_conversation(
 
 
 # ---- 错误恢复辅助函数 ----
+
 
 def _recover_from_error(
     result: Any,

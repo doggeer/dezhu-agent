@@ -262,7 +262,7 @@ uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv ru
 - 先用 `git diff --stat` 展示变更文件清单
 - 然后逐文件贴入完整 diff（`git diff`）
 
-#### 5.4 代码含义
+#### 5.4 变更代码含义
 
 逐文件解释变更意图：
 - 文件名
@@ -271,7 +271,7 @@ uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv ru
 
 ### 6. 自动提交
 
-向用户呈现测试报告后，执行 Git 提交：
+向用户呈现测试报告后，等待用户确认，用户确认没问题后，执行 Git 提交：
 
 - 获取 `git diff --stat` 的变更文件清单
 - `git add` 暂存这些文件（不包含无关变更）

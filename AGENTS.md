@@ -45,6 +45,7 @@ dezhu-agent/
 ├── tests/                   # 测试文件
 │   ├── __init__.py
 │   ├── conftest.py
+│   ├── reports/             # 测试报告（功能模块中文命名）
 │   └── test_prompt_builder.py
 ├── pyproject.toml           # 项目元数据与工具配置
 ├── .env.example             # 环境变量模板
@@ -239,7 +240,7 @@ uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv ru
 
 ### 5. 生成测试报告
 
-自检通过后，向用户呈现一份结构化测试报告，在对话中直接输出。报告必须包含以下四个部分：
+自检通过后，向用户呈现一份结构化测试报告，在对话中直接输出，同时将报告保存到 `tests/reports/` 目录下，文件名以变更功能模块中文命名。报告必须包含以下四个部分：
 
 #### 5.1 测试用例清单
 

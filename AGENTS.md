@@ -202,6 +202,17 @@ Agent 实现功能的完整流程如下。所有步骤均由 Agent 自动执行�
   - 测试文件命名: `test_{模块名}.py`
   - 使用项目 `conftest.py` 中的已有 fixtures
 
+
+### 2.5 CodeGraph 同步索引
+
+代码变更后，将最新代码结构同步到 CodeGraph 语义索引中：
+
+```bash
+codegraph sync
+```
+
+CodeGraph 的 watchdog 后台进程通常已自动完成同步；手动执行一步确认索引与磁盘一致即可。
+
 ### 3. 自检
 
 实现完成后立即执行完整检查链：

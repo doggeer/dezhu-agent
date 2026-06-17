@@ -1,67 +1,38 @@
-"""Agent 核心循环 —— 对话管理、工具调用调度、上下文压缩."""
+"""Agent 核心循环 —— 对话管理、工具调用调度、上下文压缩与错误恢复."""
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import structlog
-from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 from dezhu_agent.config import Settings, get_config
 from dezhu_agent.core.compression import CompressionStuckError, ContextCompressor
-from dezhu_agent.core.task_state import get_task_state_manager, set_current_session_id
+from dezhu_agent.core.model_client import ModelClient
 from dezhu_agent.core.prompt_builder import build_system_prompt
+from dezhu_agent.core.task_state import get_task_state_manager, set_current_session_id
+from dezhu_agent.models.error import ErrorCategory
 from dezhu_agent.models.message import ConversationResult, Message
 from dezhu_agent.services.session_store import get_session_store
 from dezhu_agent.services.tool_registry import ToolRegistry, get_tool_registry
 
 logger = structlog.get_logger(__name__)
 
-# ---- API 重试配置 ----
-_MAX_RETRIES = 3
-_RETRY_BACKOFF = 2.0  # seconds base
-_RETRYABLE = (RateLimitError, APITimeoutError, APIError)
-
-
-def _call_with_retry(
-    client: OpenAI,
-    model: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None,
-) -> Any:
-    """调用 OpenAI chat completion, 对可重试错误自动重试."""
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            return client.chat.completions.create(
-                model=model,
-                messages=messages,  # type: ignore[arg-type]
-                tools=tools or None,  # type: ignore[arg-type]
-            )
-        except _RETRYABLE as exc:
-            last_exc = exc
-            if attempt < _MAX_RETRIES:
-                wait = _RETRY_BACKOFF**attempt
-                logger.warning(
-                    "API call failed (attempt %d/%d), retrying in %.1fs: %s", attempt, _MAX_RETRIES, wait, exc
-                )
-                time.sleep(wait)
-        except Exception:
-            raise
-    raise last_exc  # type: ignore[misc]
-
 
 def agent_loop() -> None:
-    """交互式 REPL 对话循环, 支持会话持久化与上下文压缩."""
+    """交互式 REPL 对话循环, 支持会话持久化、上下文压缩与错误恢复."""
 
     store = get_session_store()
     store.init_db()
 
     config = get_config()
     registry = get_tool_registry()
-    client = OpenAI(base_url=config.BASE_URL, api_key=config.API_KEY)
+    model_client = ModelClient(config)
     compressor = ContextCompressor(config)
+
+    # ---- 健康检查 ----
+    if not model_client.check_health():
+        logger.warning("API 健康检查失败, 对话可能无法正常工作")
 
     sessions = store.list_sessions(10)
 
@@ -117,17 +88,24 @@ def agent_loop() -> None:
         if not user_input or user_input.lower() in ("quit", "exit"):
             break
 
+        # ---- 主模型恢复 ----
+        model_client.try_recover_main()
+
         result = run_conversation(
             user_input,
             messages,
             system_prompt,
             session_id,
-            client=client,
+            model_client=model_client,
             compressor=compressor,
             registry=registry,
             config=config,
         )
-        print(f"\nAssistant: {result.final_response}\n")
+
+        if result.error:
+            print(f"\n[错误] {result.error}\n")
+        else:
+            print(f"\nAssistant: {result.final_response}\n")
 
         if result.compression_triggered:
             new_id = store.create_session("cli", config.MODEL, parent_session_id=session_id)
@@ -144,17 +122,18 @@ def run_conversation(
     system_prompt: str,
     session_id: str,
     *,
-    client: OpenAI,
+    model_client: ModelClient,
     compressor: ContextCompressor,
     registry: ToolRegistry,
     config: Settings,
 ) -> ConversationResult:
-    """同步 agent 循环：压缩守卫 → 模型调用 → 工具执行.
+    """同步 agent 循环: 压缩守卫 → 模型调用 (含错误恢复) → 工具执行.
 
-    集成上下文压缩：
-    - Preflight: 进循环前检查 token，超阈值则执行完整压缩
-    - 循环内: 每轮清理旧工具输出，仍超阈值则执行完整压缩
-    - CompressionStuckError: 压缩无效时早退
+    错误恢复流程:
+    - finish_reason=length → ModelClient 自动续写
+    - 400 上下文溢出 → 压缩后重试一次
+    - 401/404 → 故障转移到备用模型
+    - 403/thinking-budget → 放弃, 返回错误
     """
     compression_triggered = False
     messages.append({"role": "user", "content": user_message})
@@ -167,7 +146,7 @@ def run_conversation(
     # ---- Preflight 压缩 ----
     try:
         if compressor.estimate_tokens(messages) > config.COMPRESSION_THRESHOLD:
-            messages, ok = compressor.compress(messages, is_active=task_state.is_active)
+            messages, ok = compressor.compress(messages)
             compression_triggered = ok
     except CompressionStuckError:
         return ConversationResult(
@@ -180,12 +159,12 @@ def run_conversation(
         task_state.increment_round()
 
         # ---- 循环内 Layer 1: 清理旧工具输出 ----
-        compressor.clear_old_tool_outputs(messages, is_active=task_state.is_active)
+        compressor.clear_old_tool_outputs(messages)
 
         # ---- 循环内 Layer 2+3: 仍超阈值则完整压缩 ----
         try:
             if compressor.estimate_tokens(messages) > config.COMPRESSION_THRESHOLD:
-                messages, ok = compressor.compress(messages, is_active=task_state.is_active)
+                messages, ok = compressor.compress(messages)
                 compression_triggered = compression_triggered or ok
         except CompressionStuckError:
             return ConversationResult(
@@ -200,15 +179,34 @@ def run_conversation(
             augmented_system = system_prompt + "\n\n" + task_state.render()
 
         api_messages = [{"role": "system", "content": augmented_system}, *messages]
+        tools = registry.get_tools_for_openai() or None
 
-        response = _call_with_retry(
-            client,
-            config.MODEL,
-            api_messages,
-            registry.get_tools_for_openai() or None,
-        )
+        # ---- 模型调用 (含续写) ----
+        result = model_client.call_with_continuation(api_messages, tools)
 
-        # 自适应校准: 用实际 prompt_tokens 修正 token 估算
+        # ---- 错误恢复 ----
+        if not result.success:
+            result = _recover_from_error(
+                result,
+                api_messages,
+                messages,
+                tools,
+                augmented_system,
+                model_client,
+                compressor,
+                task_state.is_active,
+            )
+            if not result.success:
+                return ConversationResult(
+                    final_response="",
+                    messages=messages,
+                    compression_triggered=compression_triggered,
+                    error=result.error_message,
+                )
+
+        # ---- 自适应校准 ----
+        response = result.response
+        assert response is not None
         if response.usage:
             compressor.calibrate(compressor._raw_estimate(api_messages), response.usage.prompt_tokens)
 
@@ -219,9 +217,9 @@ def run_conversation(
             "content": assistant_msg.content or "",
         }
         if assistant_msg.tool_calls:
-            tool_calls: list[dict[str, Any]] = []
+            tool_calls_list: list[dict[str, Any]] = []
             for tc in assistant_msg.tool_calls:
-                tool_calls.append(
+                tool_calls_list.append(
                     {
                         "id": tc.id,
                         "type": "function",
@@ -231,20 +229,20 @@ def run_conversation(
                         },
                     }
                 )
-            msg["tool_calls"] = tool_calls
+            msg["tool_calls"] = tool_calls_list
         messages.append(msg)
         get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
 
         if not assistant_msg.tool_calls:
             # 模型返回最终回复, 但任务活跃且未完成: 注入提醒
             if task_state.is_active and not task_state.is_completed:
-                reminder = (
+                task_reminder = (
                     "[System Reminder] You have an active task "
                     f"(goal: '{task_state.goal}') but replied without marking it as completed. "
                     "Use todo_update to mark remaining steps as completed, "
                     "or explicitly mark the task as done."
                 )
-                messages.append({"role": "user", "content": reminder})
+                messages.append({"role": "user", "content": str(task_reminder)})
                 get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
             return ConversationResult(
                 final_response=assistant_msg.content or "",
@@ -263,7 +261,7 @@ def run_conversation(
         # ---- 轮次提醒: 超过阈值轮未更新 TODO 时提醒 ----
         reminder = task_state.check_reminder(config.TODO_REMINDER_ROUNDS)
         if reminder:
-            messages.append({"role": "user", "content": reminder})
+            messages.append({"role": "user", "content": str(reminder)})
             get_session_store().store_message(session_id, Message.from_dict(messages[-1]))
 
     return ConversationResult(
@@ -271,3 +269,48 @@ def run_conversation(
         messages=messages,
         compression_triggered=compression_triggered,
     )
+
+
+# ---- 错误恢复辅助函数 ----
+
+def _recover_from_error(
+    result: Any,
+    api_messages: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    augmented_system: str,
+    model_client: ModelClient,
+    compressor: ContextCompressor,
+    is_active: bool,
+) -> Any:
+    """根据错误分类执行对应的恢复策略.
+
+    Returns:
+        恢复后的 ApiCallResult, 若恢复失败则保持 success=False.
+    """
+    if result.category == ErrorCategory.CONTEXT_OVERFLOW:
+        logger.warning("上下文溢出 (400), 尝试压缩后重试")
+        try:
+            compressed, _ok = compressor.compress(messages)
+            messages[:] = compressed
+            new_api_messages = [{"role": "system", "content": augmented_system}, *messages]
+            retry_result = model_client.call(new_api_messages, tools)
+            if retry_result.success:
+                return retry_result
+            logger.error("压缩后重试仍失败: %s", retry_result.error_message)
+        except CompressionStuckError as exc:
+            logger.error("压缩无效: %s", exc)
+        # 压缩后仍失败，当作 FATAL
+        result.category = ErrorCategory.FATAL
+
+    if result.category in (ErrorCategory.AUTH_FAILURE, ErrorCategory.MODEL_NOT_FOUND):
+        logger.warning("认证/模型错误, 尝试故障转移")
+        if model_client.try_fallback():
+            new_api_messages = [{"role": "system", "content": augmented_system}, *messages]
+            retry_result = model_client.call_with_continuation(new_api_messages, tools)
+            if retry_result.success:
+                return retry_result
+            logger.error("故障转移后调用仍失败: %s", retry_result.error_message)
+        result.category = ErrorCategory.FATAL
+
+    return result

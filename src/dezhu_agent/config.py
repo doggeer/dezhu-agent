@@ -45,6 +45,22 @@ class Settings(BaseSettings):
     # --- Task ToDo ---
     TODO_REMINDER_ROUNDS: int = 3
 
+    # --- Error handling (ModelClient) ---
+    # 可恢复错误的最大重试次数
+    MAX_RETRIES: int = 3
+    # 首次退避等待秒数
+    RETRY_BASE_DELAY: float = 5.0
+    # 退避等待上限秒数
+    RETRY_MAX_DELAY: float = 60.0
+    # 抖动比例 (±10%)
+    RETRY_JITTER: float = 0.1
+    # 续写最大尝试次数
+    MAX_CONTINUATION_ATTEMPTS: int = 3
+    # 备用模型列表，逗号分隔，如 "deepseek-v4-flash,deepseek-v3"
+    BACKUP_MODELS: str = ""
+    # 故障转移后切回主模型的冷却秒数
+    MAIN_MODEL_COOLDOWN_SECONDS: int = 300
+
 
 @lru_cache
 def get_config() -> Settings:

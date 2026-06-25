@@ -257,8 +257,8 @@ class TestBoundary:
         assert mock_call_llm.call_count == 2
 
     @patch("dezhu_agent.loop.call_llm")
-    def test_b4_system_prompt_has_tools(self, mock_call_llm):
-        """B4: system prompt 中包含工具定义."""
+    def test_b4_tools_passed_via_api_param(self, mock_call_llm):
+        """B4: 工具通过 API tools 参数传递，不写入 system prompt 文本."""
         mock_call_llm.return_value = _mock_llm("好的", "stop")
 
         def capture_call(*args, **kwargs):
@@ -267,6 +267,8 @@ class TestBoundary:
             messages = args[0] if args else kwargs.get("messages", [])
             assert messages[0]["role"] == "system"
             assert "DeZhu Agent" in messages[0]["content"]
+            # 工具不应出现在 system prompt 文本中
+            assert "可用工具" not in messages[0]["content"]
             return _mock_llm("好的", "stop")
 
         mock_call_llm.side_effect = capture_call
@@ -615,3 +617,44 @@ class TestPersistence:
             row = _message_to_row(msg, "sid", 0, "now")
             assert "reasoning" not in row
             assert "_internal" not in row
+
+    @patch("dezhu_agent.loop.call_llm")
+    @patch("dezhu_agent.loop.build_system_prompt")
+    def test_p5_system_prompt_saved_on_new_session(
+        self, mock_build_sp, mock_call_llm
+    ):
+        """P5: 新会话时 system_prompt 被组装并持久化到 storage."""
+        from unittest.mock import MagicMock
+
+        mock_call_llm.return_value = _mock_llm("ok", "stop")
+        mock_build_sp.return_value = "assembled prompt"
+        mock_storage = MagicMock()
+        mock_storage.load_system_prompt.return_value = ""  # 新会话，无已有 prompt
+
+        run_conversation("hello", storage=mock_storage, session_id="new-sid")
+
+        # 验证：调用了 load_system_prompt 检查已有 prompt
+        mock_storage.load_system_prompt.assert_called_once_with("new-sid")
+        # 验证：组装后调用了 save_system_prompt 持久化
+        mock_storage.save_system_prompt.assert_called_once_with("new-sid", "assembled prompt")
+
+    @patch("dezhu_agent.loop.call_llm")
+    @patch("dezhu_agent.loop.build_system_prompt")
+    def test_p6_system_prompt_reused_on_continue(
+        self, mock_build_sp, mock_call_llm
+    ):
+        """P6: --continue 恢复会话时复用已有 system_prompt，不重新组装."""
+        from unittest.mock import MagicMock
+
+        mock_call_llm.return_value = _mock_llm("ok", "stop")
+        mock_storage = MagicMock()
+        mock_storage.load_system_prompt.return_value = "cached prompt"  # 已有
+
+        run_conversation("hello", storage=mock_storage, session_id="existing-sid")
+
+        # 验证：调用了 load_system_prompt
+        mock_storage.load_system_prompt.assert_called_once_with("existing-sid")
+        # 验证：build_system_prompt 没有被调用（复用已有）
+        mock_build_sp.assert_not_called()
+        # 验证：save_system_prompt 没有被调用（不需要重新保存）
+        mock_storage.save_system_prompt.assert_not_called()

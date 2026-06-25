@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SYSTEM_PROMPT_TEMPLATE = """你是 DeZhu Agent，一个通过工具与系统交互的 AI 助手。
-
-## 工具使用规则
-1. 当你需要执行操作时，使用提供的工具。
-2. 工具调用后你会收到执行结果，请基于结果继续推理。
-3. 如果工具返回错误，分析错误原因并尝试修正参数后重试。
-4. 任务完成后，用自然语言回复用户总结结果。"""
+from dezhu_agent.prompt_assembler import SYSTEM_PROMPT_TEMPLATE, assemble_system_prompt
 
 
 def _tool_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -26,16 +20,11 @@ def _tool_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_system_prompt(tools: list[dict[str, Any]] | None = None) -> str:
-    """构建完整的 system prompt，包含人设和工具定义."""
-    prompt = SYSTEM_PROMPT_TEMPLATE
+    """构建完整的 system prompt，从多来源组装（SOUL.md + AGENTS.md + 技能预留）.
 
-    if tools:
-        prompt += "\n\n## 可用工具\n"
-        for tool in tools:
-            prompt += f"\n### {tool['name']}\n{tool['description']}\n"
-            prompt += f"参数：{tool['parameters']}\n"
-
-    return prompt
+    工具定义不写入 system prompt 文本，通过 build_tools_for_api() 单独传递。
+    """
+    return assemble_system_prompt(tools)
 
 
 def build_tools_for_api(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

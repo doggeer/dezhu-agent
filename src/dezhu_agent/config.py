@@ -44,3 +44,8 @@ DEZHU_DB_PATH: str = os.environ.get(
     "DEZHU_DB_PATH",
     str(PROJECT_ROOT / ".dezhu-agent" / "dezhu-agent.db"),
 )
+
+# 用户项目目录（AGENTS.md 所在目录），默认当前工作目录
+PROJECT_DIR: Path = Path(
+    os.environ.get("DEZHU_PROJECT_DIR", str(Path.cwd()))
+)

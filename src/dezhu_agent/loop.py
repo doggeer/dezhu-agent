@@ -54,7 +54,16 @@ def run_conversation(
 
     # 获取工具列表
     tools = registry.get_tools()
-    system_prompt = build_system_prompt(tools)
+
+    # 获取或组装 system prompt（session 内复用保证缓存稳定）
+    if storage is not None and session_id is not None:
+        system_prompt = storage.load_system_prompt(session_id)
+        if not system_prompt:
+            system_prompt = build_system_prompt(tools)
+            storage.save_system_prompt(session_id, system_prompt)
+    else:
+        system_prompt = build_system_prompt(tools)
+
     api_tools = build_tools_for_api(tools) if tools else None
 
     iteration = 0

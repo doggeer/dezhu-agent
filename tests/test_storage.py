@@ -355,3 +355,28 @@ class TestFts5Escape:
     def test_double_quote_escaped(self):
         result = _escape_fts5('say "hello"')
         assert '""' in result  # 双引号翻倍
+
+
+# ---- system_prompt 列 ----
+
+class TestSystemPrompt:
+    """system_prompt 列读写."""
+
+    def test_save_and_load_system_prompt(self):
+        db = _make_db()
+        sid = db.create_session()
+        db.save_system_prompt(sid, "hello world")
+        assert db.load_system_prompt(sid) == "hello world"
+
+    def test_load_system_prompt_empty_for_new_session(self):
+        db = _make_db()
+        sid = db.create_session()
+        assert db.load_system_prompt(sid) == ""
+
+    def test_system_prompt_column_exists_in_new_db(self):
+        db = _make_db()
+        sid = db.create_session()
+        # 验证列存在：直接查 schema
+        cur = db.conn.execute("PRAGMA table_info(sessions)")
+        cols = [row["name"] for row in cur.fetchall()]
+        assert "system_prompt" in cols

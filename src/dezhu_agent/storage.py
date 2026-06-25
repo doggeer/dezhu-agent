@@ -47,6 +47,16 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    def save_system_prompt(self, session_id: str, system_prompt: str) -> None:
+        """保存系统提示词到指定会话。"""
+        ...
+
+    @abstractmethod
+    def load_system_prompt(self, session_id: str) -> str:
+        """加载指定会话的系统提示词，不存在则返回空字符串。"""
+        ...
+
+    @abstractmethod
     def update_session_meta(
         self, session_id: str, ended_at: str = "", message_count: int = 0
     ) -> None:
@@ -81,6 +91,18 @@ class SQLiteBackend(StorageBackend):
 
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
+
+        # ---- 向后兼容迁移 ----
+        try:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''"
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # 仅列已存在时跳过；其他错误（磁盘 I/O、锁等）向上传播
+            if "duplicate column name" not in str(e).lower():
+                raise
+
         self._conn = conn
 
     @property
@@ -254,6 +276,25 @@ class SQLiteBackend(StorageBackend):
         )
         self.conn.commit()
 
+    def save_system_prompt(self, session_id: str, system_prompt: str) -> None:
+        """保存系统提示词到指定会话。"""
+        self._execute_with_retry(
+            "UPDATE sessions SET system_prompt = ? WHERE session_id = ?",
+            (system_prompt, session_id),
+        )
+        self.conn.commit()
+
+    def load_system_prompt(self, session_id: str) -> str:
+        """加载指定会话的系统提示词，不存在则返回空字符串。"""
+        cur = self._execute_with_retry(
+            "SELECT system_prompt FROM sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return ""
+        return row["system_prompt"] or ""
+
 
 # ---- 消息序列化 ----
 
@@ -349,7 +390,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id   TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
     ended_at     TEXT,
-    message_count INTEGER NOT NULL DEFAULT 0
+    message_count INTEGER NOT NULL DEFAULT 0,
+    system_prompt TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS messages (

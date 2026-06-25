@@ -291,4 +291,4 @@
                     全部测试通过 ✓
 ```
 
-<!-- SPEC_STATUS: implemented — 下一步：运行 spec_review -->
+<!-- SPEC_STATUS: reviewed — 结论：✅ 可合并（3条新增验收缺测试，代码功能已实现） -->

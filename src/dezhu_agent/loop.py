@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 
 from dezhu_agent.config import ITERATION_BUDGET, STREAM_MODE
 from dezhu_agent.llm import LLMResponse, call_llm, call_llm_stream
 from dezhu_agent.messages import Message, messages_to_api_messages
 from dezhu_agent.prompt import build_system_prompt, build_tools_for_api
-from dezhu_agent.tools import execute_tool, get_tool_list
+from dezhu_agent.tools import registry
 
 
 def run_conversation(
@@ -41,7 +42,7 @@ def run_conversation(
     messages.append(Message(role="user", content=user_message))
 
     # 获取工具列表
-    tools = get_tool_list()
+    tools = registry.get_tools()
     system_prompt = build_system_prompt(tools)
     api_tools = build_tools_for_api(tools) if tools else None
 
@@ -88,7 +89,10 @@ def run_conversation(
                 except json.JSONDecodeError:
                     tool_args = {}
 
-                result = execute_tool(tool_name, tool_args)
+                result = registry.execute(tool_name, tool_args)
+
+                # 控制台显示工具执行信息
+                _log_tool_execution(tool_name, tool_args, result)
 
                 messages.append(
                     Message(
@@ -112,6 +116,22 @@ def run_conversation(
             last_assistant = m.content
             break
     return last_assistant, messages
+
+
+def _log_tool_execution(name: str, args: dict, result: str) -> None:
+    """将工具执行信息打印到 stderr，方便控制台观察."""
+    sep = "─" * 50
+    args_str = json.dumps(args, ensure_ascii=False)
+    # 结果截断到前 3 行 + 后 3 行
+    lines = result.splitlines()
+    if len(lines) > 6:
+        result_display = "\n".join(lines[:3] + ["  …"] + lines[-3:])
+    else:
+        result_display = result
+    print(f"\n{sep}", file=sys.stderr)
+    print(f"  🔧 {name}({args_str})", file=sys.stderr)
+    print(f"  📋 {result_display}", file=sys.stderr)
+    print(f"{sep}\n", file=sys.stderr)
 
 
 def _run_streaming_call(

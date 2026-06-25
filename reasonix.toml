@@ -47,7 +47,7 @@ paths = [".reasonix/skills"]   # extra custom skill roots
 # disabled_skills = ["review"]   # hide noisy or unwanted skills
 
 [permissions]
-allow = ["Bash(cd /Users/leonyuan/Desktop/dezhu-agent && git log --oneline -5 2>/dev/null; echo \"---\"; git ls-files 2>/dev/null)", "Bash(mkdir -p:*)", "Edit"]
+allow = ["Bash(cd /Users/leonyuan/Desktop/dezhu-agent && git log --oneline -5 2>/dev/null; echo \"---\"; git ls-files 2>/dev/null)", "Bash(mkdir -p:*)", "Edit", "Bash(ls specs/ 2>/dev/null || echo \"specs/ 不存在\")", "Bash(ls src/dezhu_agent/tools/ 2>/dev/null || echo \"tools/ 目录不存在\")", "Bash(rm /Users/cc/project/dezhu-agent/specs/pluggable-tools-plan.md:*)", "Bash(cd /Users/cc/project/dezhu-agent && git status --short 2>&1)", "Bash(cd /Users/cc/project/dezhu-agent && ls specs/)", "Bash(cd /Users/cc/project/dezhu-agent && head -5 specs/02-pluggable-tools.md)", "Bash(cd /Users/cc/project/dezhu-agent && git diff reasonix.toml 2>&1 | head -20)"]
 [sandbox]
 # Confine tool blast radius. File-writers (write_file/edit_file/multi_edit/move_file)
 # may only write under workspace_root (empty = current dir) and allow_write extras.

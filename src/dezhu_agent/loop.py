@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from dezhu_agent.config import ITERATION_BUDGET, STREAM_MODE
 from dezhu_agent.llm import LLMResponse, call_llm, call_llm_stream
@@ -12,11 +13,16 @@ from dezhu_agent.messages import Message, messages_to_api_messages
 from dezhu_agent.prompt import build_system_prompt, build_tools_for_api
 from dezhu_agent.tools import registry
 
+if TYPE_CHECKING:
+    from dezhu_agent.storage import StorageBackend
+
 
 def run_conversation(
     user_message: str,
     history: list[Message] | None = None,
     on_stream_chunk: Callable | None = None,
+    storage: StorageBackend | None = None,
+    session_id: str | None = None,
 ) -> tuple[str, list[Message]]:
     """运行对话循环，直到模型不再调用工具或 budget 耗尽.
 
@@ -25,6 +31,8 @@ def run_conversation(
         history: 可选的历史消息列表。
         on_stream_chunk: 流式输出回调，接收 StreamChunk 对象。
                         为 None 时使用非流式调用。
+        storage: 可选的存储后端，用于持久化消息。
+        session_id: 当前会话 ID（与 storage 配合使用）。
 
     Returns:
         (final_reply, messages) 元组：
@@ -37,6 +45,9 @@ def run_conversation(
     if not user_message.strip():
         return "（消息为空，请输入有效内容）", history or []
 
+    # 记录传入历史长度，用于计算本轮新增消息
+    history_start_len = len(history) if history else 0
+
     # 初始化消息历史
     messages: list[Message] = list(history) if history else []
     messages.append(Message(role="user", content=user_message))
@@ -48,6 +59,13 @@ def run_conversation(
 
     iteration = 0
     use_stream = STREAM_MODE and on_stream_chunk is not None
+
+    # 持久化辅助函数
+    def _persist() -> None:
+        if storage is not None and session_id is not None:
+            new_msgs = messages[history_start_len:]
+            if new_msgs:
+                storage.save_messages(session_id, new_msgs)
 
     while iteration < ITERATION_BUDGET:
         iteration += 1
@@ -74,6 +92,7 @@ def run_conversation(
         messages.append(assistant_msg)
 
         if response.finish_reason == "stop":
+            _persist()
             return response.content or "", messages
 
         elif response.finish_reason == "tool_calls":
@@ -107,9 +126,11 @@ def run_conversation(
             continue
 
         else:
+            _persist()
             return response.content or "", messages
 
     # E4: iteration budget 耗尽
+    _persist()
     last_assistant = ""
     for m in reversed(messages):
         if m.role == "assistant" and m.content:

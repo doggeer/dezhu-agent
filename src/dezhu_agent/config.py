@@ -38,3 +38,9 @@ REASONING_EFFORT: str = os.environ.get("REASONING_EFFORT", "high")
 
 # 流式输出
 STREAM_MODE: bool = os.environ.get("STREAM_MODE", "false").lower() in ("true", "1", "yes")
+
+# 消息持久化
+DEZHU_DB_PATH: str = os.environ.get(
+    "DEZHU_DB_PATH",
+    str(PROJECT_ROOT / ".dezhu-agent" / "dezhu-agent.db"),
+)

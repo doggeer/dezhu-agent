@@ -1,7 +1,22 @@
-"""CLI 入口：交互式对话，每行输入发给 agent."""
+"""CLI 入口：交互式对话，每行输入发给 agent.
+
+支持参数：
+  dezhu-agent                 新会话
+  dezhu-agent --continue [N]  恢复最近 N 个会话
+  dezhu-agent --search TEXT   搜索历史消息
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import signal
+import sys
+from datetime import datetime, timezone
 
 from dezhu_agent.config import STREAM_MODE, THINKING_ENABLED
 from dezhu_agent.loop import run_conversation
+from dezhu_agent.storage import SQLiteBackend
 
 
 def _print_cache_stats(hit: int, miss: int):
@@ -40,7 +55,103 @@ def _make_stream_printer():
     return _print
 
 
-def main():
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """解析命令行参数."""
+    parser = argparse.ArgumentParser(
+        prog="dezhu-agent",
+        description="DeZhu Agent — AI 编程助手 CLI",
+    )
+    parser.add_argument(
+        "--continue",
+        dest="continue_n",
+        nargs="?",
+        const=10,
+        type=int,
+        default=None,
+        metavar="N",
+        help="恢复最近的 N 个会话（默认 10）",
+    )
+    parser.add_argument(
+        "--search",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help="搜索历史消息内容",
+    )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="数据库文件路径",
+    )
+    return parser.parse_args(argv)
+
+
+def _run_search(storage: SQLiteBackend, query: str) -> None:
+    """--search 模式：搜索并格式化输出，然后退出."""
+    results = storage.search_messages(query)
+    if not results:
+        print("未找到匹配的消息。")
+        return
+
+    print(f"搜索「{query}」— 找到 {len(results)} 条结果：\n")
+    for i, r in enumerate(results, 1):
+        sid = r["session_id"][:8]
+        created = r.get("created_at", "")[:19]
+        print(f"[{i}] 会话 {sid}  |  {created}")
+        if r.get("context_before"):
+            print(f"    … {r['context_before'][:80]}")
+        content = r.get("content", "") or "(空)"
+        print(f"    → {content[:120]}")
+        if r.get("context_after"):
+            print(f"    … {r['context_after'][:80]}")
+        print()
+
+
+def _run_continue(storage: SQLiteBackend, limit: int) -> tuple[str, list | None]:
+    """--continue 模式：列出最近会话，交互式选择，返回 (session_id, history)."""
+    sessions = storage.list_sessions(limit)
+    if not sessions:
+        print("没有历史会话，将创建新会话。")
+        return storage.create_session(), None
+
+    print(f"最近 {len(sessions)} 个会话：\n")
+    for i, s in enumerate(sessions, 1):
+        sid = s["session_id"][:8]
+        created = s.get("created_at", "")[:19]
+        count = s.get("message_count", 0)
+        ended = s.get("ended_at", "")
+        status = "已结束" if ended else "进行中"
+        print(f"  {i}. 会话 {sid}  |  {created}  |  {count} 条消息  |  {status}")
+
+    print()
+    while True:
+        try:
+            choice = input(f"选择会话 (1-{len(sessions)}，直接回车创建新会话): ").strip()
+        except EOFError:
+            choice = ""
+
+        if choice == "":
+            return storage.create_session(), None
+
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(sessions):
+                selected = sessions[idx - 1]
+                sid = selected["session_id"]
+                history = storage.load_messages(sid)
+                print(f"已恢复会话 {sid[:8]}（{len(history)} 条消息）\n")
+                return sid, history
+        except ValueError:
+            pass
+        print(f"请输入 1-{len(sessions)} 之间的数字，或直接回车创建新会话。")
+
+
+def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: list | None) -> None:
+    """主对话循环."""
+    current_history = history
+
     while True:
         try:
             user_message = input("> ")
@@ -48,17 +159,27 @@ def main():
             break
         if not user_message.strip():
             continue
+        if user_message.strip() == "/exit":
+            break
 
         if STREAM_MODE:
-            final_reply, _history = run_conversation(
+            final_reply, new_history = run_conversation(
                 user_message,
+                history=current_history,
                 on_stream_chunk=_make_stream_printer(),
+                storage=storage,
+                session_id=session_id,
             )
         else:
-            final_reply, history = run_conversation(user_message)
+            final_reply, new_history = run_conversation(
+                user_message,
+                history=current_history,
+                storage=storage,
+                session_id=session_id,
+            )
 
-            if THINKING_ENABLED and history:
-                for m in reversed(history):
+            if THINKING_ENABLED and new_history:
+                for m in reversed(new_history):
                     if m.role == "assistant" and m.reasoning_content:
                         print(f"\n💭 思考中 {'─' * 44}")
                         print(f"\033[2m{m.reasoning_content}\033[0m")
@@ -67,7 +188,7 @@ def main():
 
             # 取最后一条 assistant 消息的缓存统计
             cache_hit = cache_miss = 0
-            for m in reversed(history):
+            for m in reversed(new_history):
                 if m.role == "assistant":
                     cache_hit = m.prompt_cache_hit_tokens
                     cache_miss = m.prompt_cache_miss_tokens
@@ -75,6 +196,65 @@ def main():
 
             print(f"💬 {final_reply}")
             _print_cache_stats(cache_hit, cache_miss)
+
+        current_history = new_history
+
+
+def _register_exit_handlers(storage: SQLiteBackend, session_id: str) -> None:
+    """注册退出处理器：更新会话元数据."""
+    ended = False
+
+    def _cleanup() -> None:
+        nonlocal ended
+        if ended:
+            return
+        ended = True
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            # 使用 COUNT 查询获取消息数，避免加载全部消息
+            cur = storage.conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            count = row[0] if row else 0
+            storage.update_session_meta(session_id, ended_at=now, message_count=count)
+        except Exception as e:
+            print(f"Warning: 无法更新会话元数据: {e}", file=sys.stderr)
+
+    atexit.register(_cleanup)
+
+    def _signal_handler(signum, frame):
+        _cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+
+def main(argv: list[str] | None = None):
+    args = _parse_args(argv)
+
+    # 初始化存储
+    storage = SQLiteBackend(args.db_path or "")
+
+    # --search 模式（不进入对话循环）
+    if args.search:
+        _run_search(storage, args.search)
+        return
+
+    # --continue 模式
+    if args.continue_n is not None:
+        session_id, history = _run_continue(storage, args.continue_n)
+    else:
+        # 默认模式：展示最近会话列表，用户可选择历史或创建新会话
+        session_id, history = _run_continue(storage, 10)
+
+    # 注册退出处理
+    _register_exit_handlers(storage, session_id)
+
+    # 进入对话循环
+    _run_conversation_loop(storage, session_id, history)
 
 
 if __name__ == "__main__":

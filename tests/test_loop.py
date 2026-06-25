@@ -89,7 +89,7 @@ class TestNormalPath:
         """N4: CLI 交互式输入，打印最终回复到 stdout."""
         mock_input.side_effect = ["你好", EOFError]
         mock_loop.return_value = ("Hello from agent", [])
-        main()
+        main(argv=["--db-path", ":memory:"])
         captured = capsys.readouterr()
         assert "Hello from agent" in captured.out
 
@@ -99,7 +99,7 @@ class TestNormalPath:
         """N4: CLI 跳过空输入，继续等待有效输入."""
         mock_input.side_effect = ["", "hello", EOFError]
         mock_loop.return_value = ("reply", [])
-        main()
+        main(argv=["--db-path", ":memory:"])
         captured = capsys.readouterr()
         assert "reply" in captured.out
 
@@ -527,3 +527,91 @@ class TestCacheStats:
         reply, history = run_conversation("hi", on_stream_chunk=on_chunk)
         assert last_chunk[0].prompt_cache_hit_tokens == 200
         assert last_chunk[0].prompt_cache_miss_tokens == 30
+
+
+# ==================== 持久化集成 ====================
+
+
+class TestPersistence:
+    """P1-P4: 持久化集成验收."""
+
+    @patch("dezhu_agent.loop.call_llm")
+    def test_p1_storage_none_unchanged(self, mock_call_llm):
+        """P1: storage=None 时现有行为完全不变."""
+        mock_call_llm.return_value = _mock_llm("Hello", "stop")
+
+        reply, history = run_conversation("hi", storage=None)
+        assert reply == "Hello"
+        assert len(history) == 2
+
+    @patch("dezhu_agent.loop.call_llm")
+    def test_p2_save_messages_called_on_stop(self, mock_call_llm):
+        """P2: finish_reason=stop 时调用 storage.save_messages."""
+        from unittest.mock import MagicMock
+
+        mock_call_llm.return_value = _mock_llm("done", "stop")
+        mock_storage = MagicMock()
+        mock_storage.save_messages = MagicMock()
+
+        reply, history = run_conversation(
+            "hi", storage=mock_storage, session_id="test-sid"
+        )
+        assert reply == "done"
+        mock_storage.save_messages.assert_called_once()
+        call_args = mock_storage.save_messages.call_args
+        assert call_args[0][0] == "test-sid"
+        # 新增了 2 条消息：user + assistant
+        assert len(call_args[0][1]) == 2
+
+    @patch("dezhu_agent.loop.call_llm")
+    def test_p3_save_messages_called_on_budget_exhausted(self, mock_call_llm):
+        """P3: budget 耗尽时仍然调用 storage.save_messages."""
+        from unittest.mock import MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.save_messages = MagicMock()
+
+        tool_call = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path": "test.txt"}'},
+            }
+        ]
+        mock_call_llm.side_effect = lambda *a, **kw: _mock_llm(
+            "", "tool_calls", tool_calls=tool_call
+        )
+
+        with patch("dezhu_agent.loop.ITERATION_BUDGET", 2):
+            reply, history = run_conversation(
+                "looping", storage=mock_storage, session_id="test-sid"
+            )
+
+        mock_storage.save_messages.assert_called_once()
+
+    @patch("dezhu_agent.loop.call_llm")
+    def test_p4_internal_fields_not_in_serialized(self, mock_call_llm):
+        """P4: _internal 和 reasoning 不出现在持久化数据中."""
+        from unittest.mock import MagicMock
+
+        mock_call_llm.return_value = _mock_llm("ok", "stop")
+        mock_storage = MagicMock()
+        mock_storage.save_messages = MagicMock()
+
+        history = [
+            Message(role="user", content="hi", reasoning="hidden", _internal={"x": 1}),
+        ]
+        reply, new_history = run_conversation(
+            "next",
+            history=history,
+            storage=mock_storage,
+            session_id="test-sid",
+        )
+
+        # 验证存储的序列化数据不包含内部字段
+        from dezhu_agent.storage import _message_to_row
+
+        for msg in new_history:
+            row = _message_to_row(msg, "sid", 0, "now")
+            assert "reasoning" not in row
+            assert "_internal" not in row

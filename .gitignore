@@ -221,3 +221,6 @@ __marimo__/
 
 # PyCharm
 .idea/
+
+# dezhu-agent runtime data
+.dezhu-agent/

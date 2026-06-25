@@ -48,4 +48,5 @@ AI agent 项目（Python），实现 Hermes Agent 对话循环。
 - **工具启用/禁用**：通过 `tools_config.yaml` 配置，重启生效
 - **测试隔离**：registry 测试使用独立 `ToolRegistry()` 实例；loop 测试由 conftest 的 autouse fixture 将 `dezhu_agent.tools.registry` 替换为独立实例
 - 测试中 `_TOOL_REGISTRATIONS` 列表在每次 @tool 装饰器使用时需先 `.clear()`，避免跨测试污染
+- **数据库文件**：默认存放在 `.dezhu-agent/dezhu-agent.db`，可通过 `DEZHU_DB_PATH` 环境变量或 `--db-path` 参数覆盖。自动创建，无需手动初始化。
 - **Commit 消息**：使用中文+英文混合描述。中文说明改动类别，英文/代码术语保持原文。格式参考：`<type>: <中文概述>\n\n【模块/分类】\n- <英文/代码细节>\n\nref: specs/<file>.md`

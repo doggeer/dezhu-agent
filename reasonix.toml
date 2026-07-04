@@ -54,8 +54,8 @@ allow = ["Bash(cd /Users/leonyuan/Desktop/dezhu-agent && git log --oneline -5 2>
 # bash = "enforce" (default) jails each command in an OS sandbox (macOS now;
 # graceful fallback elsewhere); "off" disables it. network allows egress.
 # workspace_root = ""            # default: current working directory
-# allow_write = ["/tmp"]          # extra dirs writers may also modify
-bash    = "enforce"
+allow_write = ["/Users/cc"]          # extra dirs writers may also modify
+bash    = "off"
 network = true
 
 [statusline]

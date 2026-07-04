@@ -49,3 +49,12 @@ DEZHU_DB_PATH: str = os.environ.get(
 PROJECT_DIR: Path = Path(
     os.environ.get("DEZHU_PROJECT_DIR", str(Path.cwd()))
 )
+
+# --- 上下文压缩 ---
+COMPRESSION_ENABLED: bool = os.environ.get("COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+COMPRESSION_TRIGGER_RATIO: float = float(os.environ.get("COMPRESSION_TRIGGER_RATIO", "0.7"))
+COMPRESSION_PREFLIGHT_RATIO: float = float(os.environ.get("COMPRESSION_PREFLIGHT_RATIO", "0.8"))
+COMPRESSION_AUX_MODEL: str = os.environ.get("COMPRESSION_AUX_MODEL", "deepseek-v4-flash")
+COMPRESSION_AUX_API_KEY: str | None = os.environ.get("COMPRESSION_AUX_API_KEY") or OPENAI_API_KEY
+COMPRESSION_AUX_BASE_URL: str = os.environ.get("COMPRESSION_AUX_BASE_URL", OPENAI_BASE_URL)
+COMPRESSION_WINDOW_SIZE: int = int(os.environ.get("COMPRESSION_WINDOW_SIZE", "200000"))

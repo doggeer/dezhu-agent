@@ -22,8 +22,12 @@ class StorageBackend(ABC):
     """消息存储抽象接口。"""
 
     @abstractmethod
-    def create_session(self) -> str:
-        """创建新会话，返回 session_id (UUID4 字符串)。"""
+    def create_session(self, parent_session_id: str = "") -> str:
+        """创建新会话，返回 session_id (UUID4 字符串)。
+
+        Args:
+            parent_session_id: 父会话 ID（压缩分裂时使用），默认空字符串表示无父会话。
+        """
         ...
 
     @abstractmethod
@@ -61,6 +65,15 @@ class StorageBackend(ABC):
         self, session_id: str, ended_at: str = "", message_count: int = 0
     ) -> None:
         """更新会话元数据（结束时间、消息总数）。"""
+        ...
+
+    @abstractmethod
+    def list_session_chain(self, session_id: str, max_depth: int = 10) -> list[dict]:
+        """查询 session 链（沿 parent_session_id 递归）。
+
+        返回从给定 session_id 向上追溯到根 session 的列表，按时间升序。
+        max_depth 防止循环引用导致无限递归。
+        """
         ...
 
 
@@ -103,6 +116,16 @@ class SQLiteBackend(StorageBackend):
             if "duplicate column name" not in str(e).lower():
                 raise
 
+        # ---- 向后兼容迁移：parent_session_id ----
+        try:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT"
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+
         self._conn = conn
 
     @property
@@ -129,12 +152,13 @@ class SQLiteBackend(StorageBackend):
 
     # ---- 公开 API ----
 
-    def create_session(self) -> str:
+    def create_session(self, parent_session_id: str = "") -> str:
         session_id = uuid.uuid4().hex
         now = _now_iso()
+        parent = parent_session_id if parent_session_id else None
         self._execute_with_retry(
-            "INSERT INTO sessions (session_id, created_at) VALUES (?, ?)",
-            (session_id, now),
+            "INSERT INTO sessions (session_id, created_at, parent_session_id) VALUES (?, ?, ?)",
+            (session_id, now, parent),
         )
         self.conn.commit()
         return session_id
@@ -187,7 +211,7 @@ class SQLiteBackend(StorageBackend):
 
     def list_sessions(self, limit: int = 10) -> list[dict]:
         cur = self._execute_with_retry(
-            """SELECT session_id, created_at, message_count, ended_at
+            """SELECT session_id, created_at, parent_session_id, message_count, ended_at
                FROM sessions
                ORDER BY created_at DESC
                LIMIT ?""",
@@ -295,6 +319,27 @@ class SQLiteBackend(StorageBackend):
             return ""
         return row["system_prompt"] or ""
 
+    def list_session_chain(self, session_id: str, max_depth: int = 10) -> list[dict]:
+        """查询 session 链（沿 parent_session_id 递归）。"""
+        chain: list[dict] = []
+        current = session_id
+        for _ in range(max_depth):
+            cur = self._execute_with_retry(
+                "SELECT session_id, created_at, parent_session_id FROM sessions WHERE session_id = ?",
+                (current,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                break
+            d = dict(row)
+            chain.append(d)
+            current = d.get("parent_session_id") or ""
+            if not current:
+                break
+        # 反转，使链从根 session 开始
+        chain.reverse()
+        return chain
+
 
 # ---- 消息序列化 ----
 
@@ -389,6 +434,7 @@ _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id   TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
+    parent_session_id TEXT,
     ended_at     TEXT,
     message_count INTEGER NOT NULL DEFAULT 0,
     system_prompt TEXT NOT NULL DEFAULT ''

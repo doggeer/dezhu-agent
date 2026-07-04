@@ -163,7 +163,7 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
             break
 
         if STREAM_MODE:
-            final_reply, new_history = run_conversation(
+            final_reply, new_history, session_id = run_conversation(
                 user_message,
                 history=current_history,
                 on_stream_chunk=_make_stream_printer(),
@@ -171,7 +171,7 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
                 session_id=session_id,
             )
         else:
-            final_reply, new_history = run_conversation(
+            final_reply, new_history, session_id = run_conversation(
                 user_message,
                 history=current_history,
                 storage=storage,

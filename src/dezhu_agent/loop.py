@@ -7,7 +7,24 @@ import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from dezhu_agent.config import ITERATION_BUDGET, STREAM_MODE
+from dezhu_agent.compression import (
+    CompressionConfig,
+    CompressionStuckError,
+    compress,
+    estimate_tokens,
+    get_task_state,
+)
+from dezhu_agent.config import (
+    COMPRESSION_AUX_API_KEY,
+    COMPRESSION_AUX_BASE_URL,
+    COMPRESSION_AUX_MODEL,
+    COMPRESSION_ENABLED,
+    COMPRESSION_PREFLIGHT_RATIO,
+    COMPRESSION_TRIGGER_RATIO,
+    COMPRESSION_WINDOW_SIZE,
+    ITERATION_BUDGET,
+    STREAM_MODE,
+)
 from dezhu_agent.llm import LLMResponse, call_llm, call_llm_stream
 from dezhu_agent.messages import Message, messages_to_api_messages
 from dezhu_agent.prompt import build_system_prompt, build_tools_for_api
@@ -23,7 +40,7 @@ def run_conversation(
     on_stream_chunk: Callable | None = None,
     storage: StorageBackend | None = None,
     session_id: str | None = None,
-) -> tuple[str, list[Message]]:
+) -> tuple[str, list[Message], str | None]:
     """运行对话循环，直到模型不再调用工具或 budget 耗尽.
 
     Args:
@@ -35,15 +52,16 @@ def run_conversation(
         session_id: 当前会话 ID（与 storage 配合使用）。
 
     Returns:
-        (final_reply, messages) 元组：
+        (final_reply, messages, session_id) 元组：
         - final_reply: 模型的最终回复文本。
         - messages: 完整的内部消息历史（可用于后续轮次）。
+        - session_id: 当前会话 ID（压缩分裂后可能已变更）。
 
     异常路径 E1：API 调用失败时向上抛出异常（fail-fast）。
     """
     # B1: 空消息直接返回提示
     if not user_message.strip():
-        return "（消息为空，请输入有效内容）", history or []
+        return "（消息为空，请输入有效内容）", history or [], session_id
 
     # 记录传入历史长度，用于计算本轮新增消息
     history_start_len = len(history) if history else 0
@@ -69,6 +87,17 @@ def run_conversation(
     iteration = 0
     use_stream = STREAM_MODE and on_stream_chunk is not None
 
+    # ---- 压缩配置 ----
+    _compression_config = CompressionConfig(
+        enabled=COMPRESSION_ENABLED,
+        trigger_ratio=COMPRESSION_TRIGGER_RATIO,
+        preflight_ratio=COMPRESSION_PREFLIGHT_RATIO,
+        window_size=COMPRESSION_WINDOW_SIZE,
+        aux_model=COMPRESSION_AUX_MODEL,
+        aux_api_key=COMPRESSION_AUX_API_KEY,
+        aux_base_url=COMPRESSION_AUX_BASE_URL,
+    )
+
     # 持久化辅助函数
     def _persist() -> None:
         if storage is not None and session_id is not None:
@@ -76,12 +105,77 @@ def run_conversation(
             if new_msgs:
                 storage.save_messages(session_id, new_msgs)
 
+    # 重建 system prompt（压缩后复用，不含 TaskState——TaskState 每轮动态拼接）
+    def _rebuild_prompt() -> str:
+        return build_system_prompt(tools)
+
+    # ---- Preflight 压缩（步骤 11） ----
+    if _compression_config.enabled and storage is not None and session_id is not None:
+        _api_msgs_for_check = messages_to_api_messages(messages)
+        preflight_tokens = estimate_tokens(_api_msgs_for_check)
+        if preflight_tokens >= _compression_config.preflight_threshold:
+            try:
+                result = compress(_api_msgs_for_check, _compression_config)
+                # 将压缩后的 dict 列表转回 Message 列表
+                messages = _dicts_to_messages(result.after_dicts if hasattr(result, 'after_dicts') else _api_msgs_for_check)
+                history_start_len = 0  # 压缩后重置基准，后续消息从 0 开始持久化
+                if result.layers_applied:
+                    # preflight 不创建新 session，直接在当前 session 继续
+                    system_prompt = _rebuild_prompt()
+                    storage.save_system_prompt(session_id, system_prompt)
+            except CompressionStuckError as e:
+                print(f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n", file=sys.stderr)
+                return "会话已无法压缩，请新开 session。", messages, session_id
+
     while iteration < ITERATION_BUDGET:
         iteration += 1
 
-        # 组装 system prompt + 消息
-        sys_msg = {"role": "system", "content": system_prompt}
+        # 组装 system prompt + 消息（TaskState 每轮动态拼接）
+        sys_msg = {"role": "system", "content": system_prompt + "\n\n" + get_task_state().render()}
         api_messages = [sys_msg] + messages_to_api_messages(messages)
+
+        # ---- 主循环压缩检查（步骤 12） ----
+        if (
+            _compression_config.enabled
+            and storage is not None
+            and session_id is not None
+            and estimate_tokens(api_messages) >= _compression_config.trigger_threshold
+        ):
+            try:
+                # 压缩消息历史（不含 system prompt）
+                history_dicts = messages_to_api_messages(messages)
+                result = compress(history_dicts, _compression_config)
+
+                if result.layers_applied:
+                    # 创建新 session（分裂）
+                    new_session_id = storage.create_session(
+                        parent_session_id=session_id
+                    )
+
+                    # 转换压缩后的消息并持久化
+                    # compress 返回的仍是 dict 列表（不含 system prompt）
+                    messages = _dicts_to_messages(result.after_dicts)
+                    history_start_len = 0  # 压缩后重置基准
+                    storage.save_messages(new_session_id, messages)
+
+                    # 重建 system prompt（缓存失效，不含 TaskState——TaskState 每轮动态拼接）
+                    system_prompt = _rebuild_prompt()
+                    storage.save_system_prompt(new_session_id, system_prompt)
+
+                    # 切换到新 session
+                    session_id = new_session_id
+
+                    # 重建 api_messages（已变更）
+                    sys_msg = {"role": "system", "content": system_prompt}
+                    api_messages = [sys_msg] + messages_to_api_messages(messages)
+
+            except CompressionStuckError as e:
+                _persist()
+                print(
+                    f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n",
+                    file=sys.stderr,
+                )
+                return "会话已无法压缩，请新开 session。", messages, session_id
 
         if use_stream:
             response = _run_streaming_call(api_messages, api_tools, on_stream_chunk)
@@ -102,7 +196,7 @@ def run_conversation(
 
         if response.finish_reason == "stop":
             _persist()
-            return response.content or "", messages
+            return response.content or "", messages, session_id
 
         elif response.finish_reason == "tool_calls":
             if not response.tool_calls:
@@ -136,7 +230,7 @@ def run_conversation(
 
         else:
             _persist()
-            return response.content or "", messages
+            return response.content or "", messages, session_id
 
     # E4: iteration budget 耗尽
     _persist()
@@ -145,7 +239,7 @@ def run_conversation(
         if m.role == "assistant" and m.content:
             last_assistant = m.content
             break
-    return last_assistant, messages
+    return last_assistant, messages, session_id
 
 
 def _log_tool_execution(name: str, args: dict, result: str) -> None:
@@ -182,3 +276,24 @@ def _run_streaming_call(
         final_response = e.value
 
     return final_response or LLMResponse(content="", finish_reason="stop", tool_calls=None)
+
+
+def _dicts_to_messages(dicts: list[dict]) -> list[Message]:
+    """将 API 格式的 dict 列表转回 Message 对象列表。
+
+    用于压缩后将 after_dicts 转回内部 Message 格式。
+    """
+    messages: list[Message] = []
+    for d in dicts:
+        # 跳过 system 消息（它不在 messages 列表中）
+        if d.get("role") == "system":
+            continue
+        messages.append(Message(
+            role=d.get("role", ""),
+            content=d.get("content"),
+            tool_calls=d.get("tool_calls"),
+            tool_call_id=d.get("tool_call_id"),
+            name=d.get("name"),
+            reasoning_content=d.get("reasoning_content"),
+        ))
+    return messages

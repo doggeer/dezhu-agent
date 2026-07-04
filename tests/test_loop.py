@@ -33,7 +33,7 @@ class TestNormalPath:
         """N1: 用户发送不需要工具的消息，模型直接回复 stop."""
         mock_call_llm.return_value = _mock_llm("你好！有什么可以帮你的？", "stop")
 
-        reply, history = run_conversation("你好")
+        reply, history, _ = run_conversation("你好")
         assert reply == "你好！有什么可以帮你的？"
         assert len(history) == 2
         assert mock_call_llm.call_count == 1
@@ -59,7 +59,7 @@ class TestNormalPath:
             _mock_llm("文件内容是：name = dezhu-agent", "stop"),
         ]
 
-        reply, history = run_conversation("读一下 pyproject.toml")
+        reply, history, _ = run_conversation("读一下 pyproject.toml")
         assert "name = dezhu-agent" in reply
         roles = [m.role for m in history]
         assert "tool" in roles
@@ -73,13 +73,13 @@ class TestNormalPath:
             _mock_llm("这是第二部分", "stop"),
         ]
 
-        reply, history = run_conversation("写一篇长文章")
+        reply, history, _ = run_conversation("写一篇长文章")
         assert "这是第二部分" in reply
         assert mock_call_llm.call_count == 2
 
     def test_n4_cli_empty_message(self):
         """N4: CLI 入口（通过空消息验证 B1 路径，不依赖 API）."""
-        reply, history = run_conversation("")
+        reply, history, _ = run_conversation("")
         assert "消息为空" in reply
         assert reply == "（消息为空，请输入有效内容）"
 
@@ -88,7 +88,7 @@ class TestNormalPath:
     def test_n4_cli_interactive(self, mock_input, mock_loop, capsys):
         """N4: CLI 交互式输入，打印最终回复到 stdout."""
         mock_input.side_effect = ["你好", EOFError]
-        mock_loop.return_value = ("Hello from agent", [])
+        mock_loop.return_value = ("Hello from agent", [], "test-sid")
         main(argv=["--db-path", ":memory:"])
         captured = capsys.readouterr()
         assert "Hello from agent" in captured.out
@@ -98,7 +98,7 @@ class TestNormalPath:
     def test_n4_cli_skip_empty(self, mock_input, mock_loop, capsys):
         """N4: CLI 跳过空输入，继续等待有效输入."""
         mock_input.side_effect = ["", "hello", EOFError]
-        mock_loop.return_value = ("reply", [])
+        mock_loop.return_value = ("reply", [], "test-sid")
         main(argv=["--db-path", ":memory:"])
         captured = capsys.readouterr()
         assert "reply" in captured.out
@@ -138,7 +138,7 @@ class TestAbnormalPath:
             _mock_llm("抱歉，我使用了错误的工具", "stop"),
         ]
 
-        reply, history = run_conversation("用 unknown_tool")
+        reply, history, _ = run_conversation("用 unknown_tool")
         tool_msgs = [m for m in history if m.role == "tool" and m.name == "unknown_tool"]
         assert len(tool_msgs) == 1
         assert "not found" in tool_msgs[0].content
@@ -164,7 +164,7 @@ class TestAbnormalPath:
             _mock_llm("文件不存在", "stop"),
         ]
 
-        reply, history = run_conversation("读一个不存在的文件")
+        reply, history, _ = run_conversation("读一个不存在的文件")
         tool_msgs = [m for m in history if m.role == "tool" and m.name == "read_file"]
         assert len(tool_msgs) == 1
         assert "Error" in tool_msgs[0].content or "not found" in tool_msgs[0].content
@@ -186,7 +186,7 @@ class TestAbnormalPath:
         mock_call_llm.side_effect = side_effect
 
         with patch("dezhu_agent.loop.ITERATION_BUDGET", 3):
-            reply, history = run_conversation("反复调用工具")
+            reply, history, _ = run_conversation("反复调用工具")
             assert mock_call_llm.call_count == 3
 
 
@@ -198,10 +198,10 @@ class TestBoundary:
 
     def test_b1_empty_message(self):
         """B1: 空消息跳过 API 调用，直接返回提示."""
-        reply, history = run_conversation("")
+        reply, history, _ = run_conversation("")
         assert reply == "（消息为空，请输入有效内容）"
 
-        reply, history = run_conversation("   ")
+        reply, history, _ = run_conversation("   ")
         assert reply == "（消息为空，请输入有效内容）"
 
     @patch("dezhu_agent.loop.call_llm")
@@ -213,7 +213,7 @@ class TestBoundary:
         ]
         mock_call_llm.return_value = _mock_llm("world", "stop")
 
-        reply, new_history = run_conversation("next", history=history)
+        reply, new_history, _ = run_conversation("next", history=history)
 
         call_args, call_kwargs = mock_call_llm.call_args
         api_messages = call_args[0]
@@ -251,7 +251,7 @@ class TestBoundary:
             _mock_llm("两个文件都读完了", "stop"),
         ]
 
-        reply, history = run_conversation("读两个文件")
+        reply, history, _ = run_conversation("读两个文件")
         tool_msgs = [m for m in history if m.role == "tool"]
         assert len(tool_msgs) == 2
         assert mock_call_llm.call_count == 2
@@ -273,7 +273,7 @@ class TestBoundary:
 
         mock_call_llm.side_effect = capture_call
 
-        reply, history = run_conversation("你好")
+        reply, history, _ = run_conversation("你好")
         assert reply == "好的"
 
 
@@ -291,7 +291,7 @@ class TestThinkingMode:
         )
 
         with patch("dezhu_agent.config.THINKING_ENABLED", True):
-            reply, history = run_conversation("9.11 和 9.8 哪个大？")
+            reply, history, _ = run_conversation("9.11 和 9.8 哪个大？")
 
         # 最后一条 assistant 消息应包含 reasoning_content
         last = history[-1]
@@ -325,7 +325,7 @@ class TestThinkingMode:
         ]
 
         with patch("dezhu_agent.config.THINKING_ENABLED", True):
-            reply, history = run_conversation("读 test.txt")
+            reply, history, _ = run_conversation("读 test.txt")
 
         # 第一条 assistant 应有 reasoning_content
         assistant_msgs = [m for m in history if m.role == "assistant"]
@@ -341,7 +341,7 @@ class TestThinkingMode:
         mock_call_llm.return_value = _mock_llm("普通回复", "stop", reasoning_content=None)
 
         with patch("dezhu_agent.config.THINKING_ENABLED", False):
-            reply, history = run_conversation("你好")
+            reply, history, _ = run_conversation("你好")
 
         last = history[-1]
         assert last.reasoning_content is None
@@ -379,7 +379,7 @@ class TestThinkingMode:
         mock_call_llm.side_effect = capture_call
 
         with patch("dezhu_agent.config.THINKING_ENABLED", True):
-            reply, history = run_conversation("另一个问题", history=history)
+            reply, history, _ = run_conversation("另一个问题", history=history)
 
 
 # ==================== 流式输出 ====================
@@ -411,7 +411,7 @@ class TestStreaming:
         def on_chunk(chunk):
             received.append(chunk)
 
-        reply, history = run_conversation("hi", on_stream_chunk=on_chunk)
+        reply, history, _ = run_conversation("hi", on_stream_chunk=on_chunk)
 
         assert len(received) == 3
         assert received[0].content_delta == "你好"
@@ -445,7 +445,7 @@ class TestStreaming:
             if chunk.content_delta:
                 content_parts.append(chunk.content_delta)
 
-        reply, history = run_conversation("宇宙的答案", on_stream_chunk=on_chunk)
+        reply, history, _ = run_conversation("宇宙的答案", on_stream_chunk=on_chunk)
 
         assert reasoning_parts == ["让我", "想想"]
         assert content_parts == ["答案是", "42"]
@@ -457,7 +457,7 @@ class TestStreaming:
         mock_call_llm.return_value = _mock_llm("普通回复", "stop")
 
         with patch("dezhu_agent.loop.STREAM_MODE", False):
-            reply, history = run_conversation("你好")
+            reply, history, _ = run_conversation("你好")
         assert reply == "普通回复"
         # 不应启动流式路径
         assert mock_call_llm.call_count == 1
@@ -482,7 +482,7 @@ class TestCacheStats:
             prompt_cache_miss_tokens=50,
         )
 
-        reply, history = run_conversation("你好")
+        reply, history, _ = run_conversation("你好")
         last = history[-1]
         assert last.prompt_cache_hit_tokens == 100
         assert last.prompt_cache_miss_tokens == 50
@@ -492,7 +492,7 @@ class TestCacheStats:
         """C2: 无缓存信息时默认为 0."""
         mock_call_llm.return_value = _mock_llm("回复", "stop")
 
-        reply, history = run_conversation("你好")
+        reply, history, _ = run_conversation("你好")
         last = history[-1]
         assert last.prompt_cache_hit_tokens == 0
         assert last.prompt_cache_miss_tokens == 0
@@ -526,7 +526,7 @@ class TestCacheStats:
         def on_chunk(c):
             last_chunk[0] = c
 
-        reply, history = run_conversation("hi", on_stream_chunk=on_chunk)
+        reply, history, _ = run_conversation("hi", on_stream_chunk=on_chunk)
         assert last_chunk[0].prompt_cache_hit_tokens == 200
         assert last_chunk[0].prompt_cache_miss_tokens == 30
 
@@ -542,7 +542,7 @@ class TestPersistence:
         """P1: storage=None 时现有行为完全不变."""
         mock_call_llm.return_value = _mock_llm("Hello", "stop")
 
-        reply, history = run_conversation("hi", storage=None)
+        reply, history, _ = run_conversation("hi", storage=None)
         assert reply == "Hello"
         assert len(history) == 2
 
@@ -555,7 +555,7 @@ class TestPersistence:
         mock_storage = MagicMock()
         mock_storage.save_messages = MagicMock()
 
-        reply, history = run_conversation(
+        reply, history, _ = run_conversation(
             "hi", storage=mock_storage, session_id="test-sid"
         )
         assert reply == "done"
@@ -585,7 +585,7 @@ class TestPersistence:
         )
 
         with patch("dezhu_agent.loop.ITERATION_BUDGET", 2):
-            reply, history = run_conversation(
+            reply, history, _ = run_conversation(
                 "looping", storage=mock_storage, session_id="test-sid"
             )
 
@@ -603,7 +603,7 @@ class TestPersistence:
         history = [
             Message(role="user", content="hi", reasoning="hidden", _internal={"x": 1}),
         ]
-        reply, new_history = run_conversation(
+        reply, new_history, _ = run_conversation(
             "next",
             history=history,
             storage=mock_storage,

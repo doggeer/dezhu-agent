@@ -58,3 +58,10 @@ COMPRESSION_AUX_MODEL: str = os.environ.get("COMPRESSION_AUX_MODEL", "deepseek-v
 COMPRESSION_AUX_API_KEY: str | None = os.environ.get("COMPRESSION_AUX_API_KEY") or OPENAI_API_KEY
 COMPRESSION_AUX_BASE_URL: str = os.environ.get("COMPRESSION_AUX_BASE_URL", OPENAI_BASE_URL)
 COMPRESSION_WINDOW_SIZE: int = int(os.environ.get("COMPRESSION_WINDOW_SIZE", "200000"))
+
+# --- 日志 ---
+DEZHU_LOG_LEVEL: str = os.environ.get("DEZHU_LOG_LEVEL", "INFO").upper()
+DEZHU_LOG_DIR: str = os.environ.get(
+    "DEZHU_LOG_DIR",
+    str(PROJECT_ROOT / "logs"),
+)

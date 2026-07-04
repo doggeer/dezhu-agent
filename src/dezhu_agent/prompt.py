@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dezhu_agent.prompt_assembler import SYSTEM_PROMPT_TEMPLATE, assemble_system_prompt
+from dezhu_agent.prompt_assembler import assemble_system_prompt
 
 
 def _tool_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:

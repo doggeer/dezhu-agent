@@ -1,11 +1,6 @@
 """prompt_assembler 测试 — 覆盖 spec 第 5 节全部组装相关验收."""
 
 import os
-import sys
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from dezhu_agent.prompt_assembler import (
     SYSTEM_PROMPT_TEMPLATE,
@@ -14,7 +9,6 @@ from dezhu_agent.prompt_assembler import (
     _read_file,
     assemble_system_prompt,
 )
-
 
 # ---- SOUL.md 测试 ----
 
@@ -162,35 +156,38 @@ class TestAssembly:
 
 
 class TestDebug:
-    """DEZHU_DEBUG 可观测性."""
+    """Debug 级别日志可观测性（原 DEZHU_DEBUG env，现改用日志级别控制）."""
 
-    def test_debug_enabled_outputs_to_stderr(self, tmp_path, monkeypatch, capsys):
-        """DEZHU_DEBUG=1 → stderr 有组装来源输出."""
+    def test_debug_enabled_outputs_to_log(self, tmp_path, monkeypatch, caplog):
+        """DEBUG 级别 → 日志中包含组装来源信息."""
+        import logging
+
         monkeypatch.setattr(
             "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
         )
-        monkeypatch.setattr(os, "environ", {"DEZHU_DEBUG": "1"})
+        caplog.set_level(logging.DEBUG, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
-        captured = capsys.readouterr()
-        assert "System Prompt 组装来源" in captured.err
-        assert "人设(SOUL):" in captured.err
-        assert "项目规则(AGENTS):" in captured.err
+        assert "System Prompt 组装来源" in caplog.text
+        assert "人设(SOUL):" in caplog.text
+        assert "项目规则(AGENTS):" in caplog.text
 
-    def test_debug_disabled_no_output(self, tmp_path, monkeypatch, capsys):
-        """DEZHU_DEBUG=0 → stderr 无额外输出."""
+    def test_info_level_no_debug_output(self, tmp_path, monkeypatch, caplog):
+        """INFO 级别 → 日志中无 Debug 输出."""
+        import logging
+
         monkeypatch.setattr(
             "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
         )
-        # 确保 DEZHU_DEBUG 不是 "1"
-        monkeypatch.setattr(os, "environ", {})
+        caplog.set_level(logging.INFO, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
-        captured = capsys.readouterr()
-        assert "System Prompt 组装来源" not in captured.err
+        assert "System Prompt 组装来源" not in caplog.text
 
     def test_debug_output_shows_byte_count_and_preview_truncation(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch, caplog
     ):
         """Debug 输出包含真实字节数和 120 字符预览截断."""
+        import logging
+
         soul_file = tmp_path / "SOUL.md"
         # 中文内容：每字符 3 字节，120+ 字符触发截断
         long_content = "人设" * 80  # 160 chars, 480 bytes
@@ -201,10 +198,9 @@ class TestDebug:
         monkeypatch.setattr(
             "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
         )
-        monkeypatch.setattr(os, "environ", {"DEZHU_DEBUG": "1"})
+        caplog.set_level(logging.DEBUG, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
-        captured = capsys.readouterr()
         # 验证字节数（中文每字符 3 字节 → 480）
-        assert "480 字节" in captured.err
+        assert "480 字节" in caplog.text
         # 验证预览截断至 120 字符：完整内容 160 字符，不应全部出现
-        assert long_content not in captured.err
+        assert long_content not in caplog.text

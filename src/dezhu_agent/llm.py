@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,9 @@ from dezhu_agent.config import (
     THINKING_ENABLED,
     _getenv_required,
 )
+from dezhu_agent.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 _client: OpenAI | None = None
 
@@ -129,9 +133,27 @@ def call_llm(
     Raises:
         openai.APIError: API 调用失败时向上抛出（fail-fast）。
     """
-    client = _get_client()
-    kwargs = _build_kwargs(messages, tools, model, stream=False)
-    response = client.chat.completions.create(**kwargs)
+    model_name = model or MODEL_NAME
+    tools_count = len(tools) if tools else 0
+    logger.info(
+        "LLM 非流式调用: model=%s, messages=%d 条, tools=%d 个",
+        model_name, len(messages), tools_count,
+    )
+    logger.debug("LLM 请求 payload:\nmodel=%s\nmessages=%s\ntools=%s",
+                 model_name, messages, tools)
+
+    try:
+        client = _get_client()
+        kwargs = _build_kwargs(messages, tools, model, stream=False)
+        response = client.chat.completions.create(**kwargs)
+    except Exception as e:
+        logger.error(
+            "LLM API 调用异常: model=%s, messages=%d 条, exception=%s: %s",
+            model_name, len(messages), type(e).__name__, e,
+        )
+        logger.debug("LLM API 异常 traceback:\n%s", traceback.format_exc())
+        raise
+
     choice = response.choices[0]
     message = choice.message
 
@@ -139,6 +161,20 @@ def call_llm(
     tool_calls = _parse_tool_calls(message)
     reasoning_content: str | None = getattr(message, "reasoning_content", None)
     hit, miss = _extract_cache_tokens(getattr(response, "usage", None))
+
+    total_tokens = getattr(response, "usage", None)
+    prompt_tokens = getattr(total_tokens, "prompt_tokens", 0) if total_tokens else 0
+    completion_tokens = getattr(total_tokens, "completion_tokens", 0) if total_tokens else 0
+
+    logger.info(
+        "LLM 响应: finish_reason=%s, prompt_tokens=%d (hit=%d, miss=%d), completion_tokens=%d",
+        finish_reason, prompt_tokens, hit, miss, completion_tokens,
+    )
+    if tool_calls:
+        tool_names = [tc["function"]["name"] for tc in tool_calls]
+        logger.info("LLM tool_calls: %s", tool_names)
+    logger.debug("LLM 响应全文: content=%s, reasoning=%s",
+                 message.content, reasoning_content)
 
     return LLMResponse(
         content=message.content,
@@ -163,9 +199,26 @@ def call_llm_stream(
     Returns:
         最后一个 chunk 通过 StopIteration.value 返回完整的 LLMResponse.
     """
-    client = _get_client()
-    kwargs = _build_kwargs(messages, tools, model, stream=True)
-    response = client.chat.completions.create(**kwargs)
+    model_name = model or MODEL_NAME
+    tools_count = len(tools) if tools else 0
+    logger.info(
+        "LLM 流式调用: model=%s, messages=%d 条, tools=%d 个",
+        model_name, len(messages), tools_count,
+    )
+    logger.debug("LLM 流式请求 payload:\nmodel=%s\nmessages=%s\ntools=%s",
+                 model_name, messages, tools)
+
+    try:
+        client = _get_client()
+        kwargs = _build_kwargs(messages, tools, model, stream=True)
+        response = client.chat.completions.create(**kwargs)
+    except Exception as e:
+        logger.error(
+            "LLM 流式 API 调用异常: model=%s, messages=%d 条, exception=%s: %s",
+            model_name, len(messages), type(e).__name__, e,
+        )
+        logger.debug("LLM 流式 API 异常 traceback:\n%s", traceback.format_exc())
+        raise
 
     accumulated_content = ""
     accumulated_reasoning = ""
@@ -227,6 +280,18 @@ def call_llm_stream(
             sc.prompt_cache_miss_tokens = cache_miss
 
         yield sc
+
+    logger.info(
+        "LLM 流式响应完成: finish_reason=%s, content_len=%d, cache_hit=%d, cache_miss=%d",
+        finish_reason, len(accumulated_content), cache_hit, cache_miss,
+    )
+    if accumulated_tool_calls:
+        tool_names = [tc["function"]["name"] for tc in accumulated_tool_calls]
+        logger.info("LLM 流式 tool_calls: %s", tool_names)
+    logger.debug(
+        "LLM 流式响应全文: finish_reason=%s, content=%s, reasoning=%s",
+        finish_reason, accumulated_content, accumulated_reasoning,
+    )
 
     return LLMResponse(
         content=accumulated_content,

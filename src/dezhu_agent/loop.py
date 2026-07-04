@@ -26,12 +26,15 @@ from dezhu_agent.config import (
     STREAM_MODE,
 )
 from dezhu_agent.llm import LLMResponse, call_llm, call_llm_stream
+from dezhu_agent.logging_config import get_logger, set_session_context
 from dezhu_agent.messages import Message, messages_to_api_messages
 from dezhu_agent.prompt import build_system_prompt, build_tools_for_api
 from dezhu_agent.tools import registry
 
 if TYPE_CHECKING:
     from dezhu_agent.storage import StorageBackend
+
+logger = get_logger(__name__)
 
 
 def run_conversation(
@@ -59,9 +62,15 @@ def run_conversation(
 
     异常路径 E1：API 调用失败时向上抛出异常（fail-fast）。
     """
+    # 同步 session 上下文到日志系统
+    set_session_context(session_id or "")
+
     # B1: 空消息直接返回提示
     if not user_message.strip():
         return "（消息为空，请输入有效内容）", history or [], session_id
+
+    # N2: 记录用户输入
+    logger.info("用户输入: %s", user_message)
 
     # 记录传入历史长度，用于计算本轮新增消息
     history_start_len = len(history) if history else 0
@@ -74,13 +83,19 @@ def run_conversation(
     tools = registry.get_tools()
 
     # 获取或组装 system prompt（session 内复用保证缓存稳定）
+    cache_hit = False
     if storage is not None and session_id is not None:
         system_prompt = storage.load_system_prompt(session_id)
         if not system_prompt:
             system_prompt = build_system_prompt(tools)
             storage.save_system_prompt(session_id, system_prompt)
+        else:
+            cache_hit = True
     else:
         system_prompt = build_system_prompt(tools)
+
+    logger.info("System prompt 缓存%s", "命中" if cache_hit else "未命中，已重建")
+    logger.debug("System prompt 全文:\n%s", system_prompt)
 
     api_tools = build_tools_for_api(tools) if tools else None
 
@@ -114,25 +129,49 @@ def run_conversation(
         _api_msgs_for_check = messages_to_api_messages(messages)
         preflight_tokens = estimate_tokens(_api_msgs_for_check)
         if preflight_tokens >= _compression_config.preflight_threshold:
+            logger.info(
+                "Preflight 压缩触发: %d tokens >= %d (threshold)",
+                preflight_tokens,
+                _compression_config.preflight_threshold,
+            )
             try:
                 result = compress(_api_msgs_for_check, _compression_config)
                 # 将压缩后的 dict 列表转回 Message 列表
-                messages = _dicts_to_messages(result.after_dicts if hasattr(result, 'after_dicts') else _api_msgs_for_check)
+                messages = _dicts_to_messages(
+                    result.after_dicts if hasattr(result, 'after_dicts') else _api_msgs_for_check
+                )
                 history_start_len = 0  # 压缩后重置基准，后续消息从 0 开始持久化
                 if result.layers_applied:
                     # preflight 不创建新 session，直接在当前 session 继续
                     system_prompt = _rebuild_prompt()
                     storage.save_system_prompt(session_id, system_prompt)
+                    logger.info(
+                        "Preflight 压缩完成: %d → %d tokens (layers: %s)",
+                        preflight_tokens,
+                        result.after_tokens,
+                        result.layers_applied,
+                    )
             except CompressionStuckError as e:
-                print(f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n", file=sys.stderr)
+                logger.error(
+                    "Preflight 压缩 stuck: %d → %d tokens",
+                    e.before, e.after,
+                )
+                print(
+                    f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n",
+                    file=sys.stderr,
+                )
                 return "会话已无法压缩，请新开 session。", messages, session_id
 
     while iteration < ITERATION_BUDGET:
         iteration += 1
 
         # 组装 system prompt + 消息（TaskState 每轮动态拼接）
-        sys_msg = {"role": "system", "content": system_prompt + "\n\n" + get_task_state().render()}
+        task_state_text = get_task_state().render()
+        sys_msg = {"role": "system", "content": system_prompt + "\n\n" + task_state_text}
         api_messages = [sys_msg] + messages_to_api_messages(messages)
+
+        logger.debug("第 %d 轮迭代 - TaskState:\n%s", iteration, task_state_text)
+        logger.debug("第 %d 轮 - token 估算: %d", iteration, estimate_tokens(api_messages))
 
         # ---- 主循环压缩检查（步骤 12） ----
         if (
@@ -141,35 +180,51 @@ def run_conversation(
             and session_id is not None
             and estimate_tokens(api_messages) >= _compression_config.trigger_threshold
         ):
+            current_tokens = estimate_tokens(api_messages)
+            logger.info(
+                "主循环压缩触发: %d tokens >= %d (threshold)",
+                current_tokens,
+                _compression_config.trigger_threshold,
+            )
             try:
                 # 压缩消息历史（不含 system prompt）
                 history_dicts = messages_to_api_messages(messages)
                 result = compress(history_dicts, _compression_config)
 
                 if result.layers_applied:
+                    old_session_id = session_id
                     # 创建新 session（分裂）
                     new_session_id = storage.create_session(
                         parent_session_id=session_id
                     )
+                    logger.info(
+                        "压缩导致 session 分裂: %s -> %s",
+                        old_session_id[:8] if old_session_id else "-",
+                        new_session_id[:8],
+                    )
 
                     # 转换压缩后的消息并持久化
-                    # compress 返回的仍是 dict 列表（不含 system prompt）
                     messages = _dicts_to_messages(result.after_dicts)
                     history_start_len = 0  # 压缩后重置基准
                     storage.save_messages(new_session_id, messages)
 
-                    # 重建 system prompt（缓存失效，不含 TaskState——TaskState 每轮动态拼接）
+                    # 重建 system prompt
                     system_prompt = _rebuild_prompt()
                     storage.save_system_prompt(new_session_id, system_prompt)
 
                     # 切换到新 session
                     session_id = new_session_id
+                    set_session_context(session_id)
 
                     # 重建 api_messages（已变更）
                     sys_msg = {"role": "system", "content": system_prompt}
                     api_messages = [sys_msg] + messages_to_api_messages(messages)
 
             except CompressionStuckError as e:
+                logger.error(
+                    "主循环压缩 stuck: %d → %d tokens",
+                    e.before, e.after,
+                )
                 _persist()
                 print(
                     f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n",
@@ -196,7 +251,14 @@ def run_conversation(
 
         if response.finish_reason == "stop":
             _persist()
-            return response.content or "", messages, session_id
+            reply = response.content or ""
+            reply_preview = reply[:500] + ("…" if len(reply) > 500 else "")
+            logger.info(
+                "对话正常结束: %d 轮迭代, 回复长度 %d 字符, 回复=%s",
+                iteration, len(reply), reply_preview,
+            )
+            logger.debug("最终回复全文:\n%s", reply)
+            return reply, messages, session_id
 
         elif response.finish_reason == "tool_calls":
             if not response.tool_calls:
@@ -212,9 +274,6 @@ def run_conversation(
                     tool_args = {}
 
                 result = registry.execute(tool_name, tool_args)
-
-                # 控制台显示工具执行信息
-                _log_tool_execution(tool_name, tool_args, result)
 
                 messages.append(
                     Message(
@@ -239,23 +298,12 @@ def run_conversation(
         if m.role == "assistant" and m.content:
             last_assistant = m.content
             break
+    reply_preview = last_assistant[:500] + ("…" if len(last_assistant) > 500 else "")
+    logger.info(
+        "对话 budget 耗尽: %d 轮后未完成, 最终回复=%s",
+        ITERATION_BUDGET, reply_preview,
+    )
     return last_assistant, messages, session_id
-
-
-def _log_tool_execution(name: str, args: dict, result: str) -> None:
-    """将工具执行信息打印到 stderr，方便控制台观察."""
-    sep = "─" * 50
-    args_str = json.dumps(args, ensure_ascii=False)
-    # 结果截断到前 3 行 + 后 3 行
-    lines = result.splitlines()
-    if len(lines) > 6:
-        result_display = "\n".join(lines[:3] + ["  …"] + lines[-3:])
-    else:
-        result_display = result
-    print(f"\n{sep}", file=sys.stderr)
-    print(f"  🔧 {name}({args_str})", file=sys.stderr)
-    print(f"  📋 {result_display}", file=sys.stderr)
-    print(f"{sep}\n", file=sys.stderr)
 
 
 def _run_streaming_call(

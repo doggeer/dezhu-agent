@@ -14,9 +14,22 @@ import signal
 import sys
 from datetime import datetime, timezone
 
-from dezhu_agent.config import STREAM_MODE, THINKING_ENABLED
+from dezhu_agent.config import DEZHU_LOG_DIR, DEZHU_LOG_LEVEL, STREAM_MODE, THINKING_ENABLED
+from dezhu_agent.logging_config import _log_level_to_int, init_logging, set_session_context
 from dezhu_agent.loop import run_conversation
 from dezhu_agent.storage import SQLiteBackend
+
+
+def _format_local_time(iso_string: str) -> str:
+    """将 UTC ISO 时间字符串转为本地时间，格式化为 YYYY-MM-DD HH:MM:SS."""
+    if not iso_string:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_string)
+    except ValueError:
+        return iso_string[:19]
+    local_dt = dt.astimezone()
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _print_cache_stats(hit: int, miss: int):
@@ -85,6 +98,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="数据库文件路径",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="启用 DEBUG 日志级别（详细输出）",
+    )
     return parser.parse_args(argv)
 
 
@@ -98,7 +117,7 @@ def _run_search(storage: SQLiteBackend, query: str) -> None:
     print(f"搜索「{query}」— 找到 {len(results)} 条结果：\n")
     for i, r in enumerate(results, 1):
         sid = r["session_id"][:8]
-        created = r.get("created_at", "")[:19]
+        created = _format_local_time(r.get("created_at", ""))
         print(f"[{i}] 会话 {sid}  |  {created}")
         if r.get("context_before"):
             print(f"    … {r['context_before'][:80]}")
@@ -119,7 +138,7 @@ def _run_continue(storage: SQLiteBackend, limit: int) -> tuple[str, list | None]
     print(f"最近 {len(sessions)} 个会话：\n")
     for i, s in enumerate(sessions, 1):
         sid = s["session_id"][:8]
-        created = s.get("created_at", "")[:19]
+        created = _format_local_time(s.get("created_at", ""))
         count = s.get("message_count", 0)
         ended = s.get("ended_at", "")
         status = "已结束" if ended else "进行中"
@@ -197,6 +216,8 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
             print(f"💬 {final_reply}")
             _print_cache_stats(cache_hit, cache_miss)
 
+        # 压缩可能导致 session 变更，同步更新日志上下文
+        set_session_context(session_id)
         current_history = new_history
 
 
@@ -235,6 +256,10 @@ def _register_exit_handlers(storage: SQLiteBackend, session_id: str) -> None:
 def main(argv: list[str] | None = None):
     args = _parse_args(argv)
 
+    # 初始化日志系统（在存储之前，确保异常能记录）
+    log_level = _log_level_to_int("DEBUG" if args.debug else DEZHU_LOG_LEVEL)
+    init_logging(log_dir=DEZHU_LOG_DIR, log_level=log_level)
+
     # 初始化存储
     storage = SQLiteBackend(args.db_path or "")
 
@@ -243,12 +268,14 @@ def main(argv: list[str] | None = None):
         _run_search(storage, args.search)
         return
 
-    # --continue 模式
+    # --continue 模式 / 默认模式
     if args.continue_n is not None:
         session_id, history = _run_continue(storage, args.continue_n)
     else:
-        # 默认模式：展示最近会话列表，用户可选择历史或创建新会话
         session_id, history = _run_continue(storage, 10)
+
+    # 设置日志 session 上下文
+    set_session_context(session_id)
 
     # 注册退出处理
     _register_exit_handlers(storage, session_id)

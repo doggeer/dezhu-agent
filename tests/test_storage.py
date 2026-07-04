@@ -3,11 +3,8 @@
 import sqlite3
 from unittest.mock import patch
 
-import pytest
-
 from dezhu_agent.messages import Message
 from dezhu_agent.storage import SQLiteBackend, _escape_fts5, _message_to_row, _row_to_message
-
 
 # ---- 辅助函数 ----
 

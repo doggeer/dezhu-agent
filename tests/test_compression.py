@@ -6,9 +6,7 @@ import pytest
 
 from dezhu_agent.compression import (
     CompressionConfig,
-    CompressionResult,
     CompressionStuckError,
-    TaskState,
     compress,
     estimate_tokens,
     find_boundaries,
@@ -17,7 +15,6 @@ from dezhu_agent.compression import (
     summarize_middle,
     truncate_old_tool_outputs,
 )
-
 
 # ---------------------------------------------------------------------------
 # estimate_tokens

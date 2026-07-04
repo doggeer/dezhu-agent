@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,14 +59,40 @@ class ToolRegistry:
         N5: 工具被禁用 → "Tool '{name}' is disabled"
         E1: 执行异常 → "Error executing tool '{name}': {msg}"
         """
+        from dezhu_agent.logging_config import get_logger
+
+        _log = get_logger(__name__)
         tool = self._tools.get(name)
         if tool is None:
+            _log.warning("工具不存在: %s", name)
             return f"Tool '{name}' not found"
         if not tool.enabled:
+            _log.warning("工具已被禁用: %s", name)
             return f"Tool '{name}' is disabled"
+
+        start = time.monotonic()
         try:
-            return tool.fn(**args)
+            result = tool.fn(**args)
+            elapsed_ms = (time.monotonic() - start) * 1000
+            result_preview = result[:500] + ("… [TRUNCATED]" if len(result) > 500 else "")
+            _log.info(
+                "工具执行: %s | 参数=%s | 耗时=%.1fms | 结果=%s",
+                name,
+                {k: str(v)[:100] for k, v in args.items()},
+                elapsed_ms,
+                result_preview,
+            )
+            _log.debug(
+                "工具执行详情: %s | 参数=%s | 耗时=%.1fms | 结果=%s",
+                name, args, elapsed_ms, result,
+            )
+            return result
         except Exception as e:
+            elapsed_ms = (time.monotonic() - start) * 1000
+            _log.error(
+                "工具执行异常: %s | 参数=%s | 耗时=%.1fms | 异常=%s",
+                name, args, elapsed_ms, e,
+            )
             return f"Error executing tool '{name}': {e}"
 
     def disable(self, name: str) -> None:

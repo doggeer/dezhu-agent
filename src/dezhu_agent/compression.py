@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from openai import OpenAI
 
-logger = logging.getLogger(__name__)
+from dezhu_agent.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # 错误类
@@ -461,8 +462,14 @@ def compress(
     before = estimate_tokens(messages)
     threshold = config.trigger_threshold
 
+    logger.info(
+        "压缩开始: before=%d tokens, threshold=%d, messages=%d 条",
+        before, threshold, len(messages),
+    )
+
     # 若本就低于阈值，不压缩
     if before <= threshold:
+        logger.info("压缩跳过: token 数 %d 未达触发阈值 %d", before, threshold)
         return CompressionResult(
             before_tokens=before,
             after_tokens=before,
@@ -481,7 +488,11 @@ def compress(
         current = truncate_old_tool_outputs(current, config.max_rounds_layer1)
         layers_applied.append(1)
         after_l1 = estimate_tokens(current)
+        logger.info("Layer 1 完成: %d → %d tokens (%.1f%%)",
+                    before, after_l1, (1 - after_l1 / before) * 100)
         if after_l1 <= threshold:
+            logger.info("压缩完成 (Layer 1): %d → %d tokens, layers=%s",
+                        before, after_l1, layers_applied)
             return CompressionResult(
                 before_tokens=before,
                 after_tokens=after_l1,
@@ -498,6 +509,10 @@ def compress(
             # 无中间段可压缩——但若 token 仍超阈值，视为 stuck
             after = estimate_tokens(current)
             if after >= int(before * _COMPRESSION_MIN_SHRINK) and after > threshold:
+                logger.error(
+                    "压缩 stuck: 无中间段可压缩, %d → %d tokens (%.1f%%)",
+                    before, after, (1 - after / before) * 100,
+                )
                 raise CompressionStuckError(before, after)
             return CompressionResult(
                 before_tokens=before,
@@ -507,6 +522,8 @@ def compress(
             )
 
         layers_applied.append(2)
+        logger.info("Layer 2 完成: head=%d 条, middle=%d 条, tail=%d 条",
+                    len(head), len(middle), len(tail))
 
         # ---- Layer 3: LLM 摘要 ----
         summary = summarize_middle(middle, config)
@@ -514,6 +531,7 @@ def compress(
             summary_msg = _summary_to_message(summary)
             current = head + [summary_msg] + tail
             layers_applied.append(3)
+            logger.info("Layer 3 完成: 摘要生成成功")
         else:
             # 降级：仅 Layer 1 + 2（移除中间段，替换为简短占位）
             degraded = True
@@ -523,12 +541,23 @@ def compress(
                 "content": "[Context compressed: intermediate conversation summarized due to token budget]",
             }
             current = head + [placeholder] + tail
+            logger.warning("Layer 3 降级: %s", degrade_reason)
 
         # ---- 验证压缩效果 ----
         after = estimate_tokens(current)
         if after >= int(before * _COMPRESSION_MIN_SHRINK):
+            logger.error(
+                "压缩 stuck: 降幅不足, %d → %d tokens (%.1f%%)",
+                before, after, (1 - after / before) * 100,
+            )
             raise CompressionStuckError(before, after)
 
+        logger.info(
+            "压缩完成: %d → %d tokens (%.1f%%), layers=%s%s",
+            before, after, (1 - after / before) * 100,
+            layers_applied,
+            " [DEGRADED]" if degraded else "",
+        )
         return CompressionResult(
             before_tokens=before,
             after_tokens=after,

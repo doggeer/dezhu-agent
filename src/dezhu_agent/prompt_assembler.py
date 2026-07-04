@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from dezhu_agent.config import PROJECT_DIR
+from dezhu_agent.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # 默认人设模板（SOUL.md 不存在时的 fallback）
 SYSTEM_PROMPT_TEMPLATE = """你是 DeZhu Agent，一个通过工具与系统交互的 AI 助手。
@@ -89,16 +90,16 @@ def _read_file(path: Path) -> str:
 
 
 def _debug_output(soul: str, agents: str, skills: str) -> None:
-    """DEZHU_DEBUG=1 时输出各来源贡献."""
-    if os.environ.get("DEZHU_DEBUG") != "1":
-        return
-
+    """DEBUG 级别记录 System Prompt 各来源贡献."""
     def _preview(text: str, max_chars: int = 120) -> str:
         return text[:max_chars].replace("\n", "\\n")
 
-    print("─" * 40, file=sys.stderr)
-    print("  System Prompt 组装来源", file=sys.stderr)
-    print(f"  人设(SOUL):        {len(soul.encode('utf-8'))} 字节 | {_preview(soul)}", file=sys.stderr)
-    print(f"  项目规则(AGENTS):  {len(agents.encode('utf-8'))} 字节 | {_preview(agents)}", file=sys.stderr)
-    print(f"  技能清单:          {len(skills.encode('utf-8'))} 字节 | {_preview(skills)}", file=sys.stderr)
-    print("─" * 40, file=sys.stderr)
+    lines = [
+        "─" * 40,
+        "  System Prompt 组装来源",
+        f"  人设(SOUL):        {len(soul.encode('utf-8'))} 字节 | {_preview(soul)}",
+        f"  项目规则(AGENTS):  {len(agents.encode('utf-8'))} 字节 | {_preview(agents)}",
+        f"  技能清单:          {len(skills.encode('utf-8'))} 字节 | {_preview(skills)}",
+        "─" * 40,
+    ]
+    logger.debug("\n".join(lines))

@@ -1,9 +1,9 @@
-"""System prompt 多来源组装：SOUL.md + AGENTS.md + 技能预留."""
+"""System prompt 多来源组装：SOUL.md + AGENTS.md + 可插拔 PromptSource."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from dezhu_agent.config import PROJECT_DIR
 from dezhu_agent.logging_config import get_logger
@@ -26,10 +26,60 @@ _AGENTS_MAX_CHARS = 2000
 _SOUL_PATH = Path.home() / ".hermes" / "SOUL.md"
 
 
+# ---------------------------------------------------------------------------
+# PromptSource 协议
+# ---------------------------------------------------------------------------
+
+
+class PromptSource(Protocol):
+    """可插拔 system prompt 数据源协议."""
+
+    name: str
+    """数据源名称，用于日志标识."""
+
+    def render(self) -> str:
+        """渲染为注入 system prompt 的文本片段。
+
+        Returns:
+            要追加到 system prompt 的文本。返回 "" 表示不注入任何内容。
+        """
+        ...
+
+
+# 模块级数据源列表
+_sources: list[PromptSource] = []
+
+
+def register_prompt_source(source: PromptSource) -> None:
+    """注册一个 PromptSource 数据源.
+
+    已注册同 name 的 source 会被替换。
+    """
+    # 替换已存在的同名 source
+    for i, s in enumerate(_sources):
+        if s.name == source.name:
+            _sources[i] = source
+            logger.info("PromptSource '%s' 已替换", source.name)
+            return
+    _sources.append(source)
+    logger.info("PromptSource '%s' 已注册", source.name)
+
+
+def unregister_prompt_source(name: str) -> None:
+    """注销指定名称的 PromptSource."""
+    global _sources
+    _sources = [s for s in _sources if s.name != name]
+
+
+# ---------------------------------------------------------------------------
+# System prompt 组装
+# ---------------------------------------------------------------------------
+
+
 def assemble_system_prompt(tools: list[dict[str, Any]] | None = None) -> str:
     """从多来源组装完整 system prompt。
 
-    顺序：人设(SOUL.md 或 SYSTEM_PROMPT_TEMPLATE) → AGENTS.md → 技能预留。
+    顺序：人设(SOUL.md 或 SYSTEM_PROMPT_TEMPLATE) → AGENTS.md → 已注册的 PromptSource。
     tools 参数预留用于后续技能清单格式化（本迭代不使用）。
     """
     parts: list[str] = []
@@ -43,13 +93,19 @@ def assemble_system_prompt(tools: list[dict[str, Any]] | None = None) -> str:
     if agents:
         parts.append(agents)
 
-    # 3. 技能预留
+    # 3. 已注册的 PromptSource
+    for source in _sources:
+        rendered = source.render()
+        if rendered:
+            parts.append(rendered)
+
+    # 4. 技能预留
     skills = _format_skills(tools)
     if skills:
         parts.append(skills)
 
     # Debug 输出
-    _debug_output(soul, agents, skills)
+    _debug_output(soul, agents, _sources, skills)
 
     return "\n\n".join(parts)
 
@@ -89,8 +145,14 @@ def _read_file(path: Path) -> str:
     return path.read_bytes().decode("utf-8-sig")
 
 
-def _debug_output(soul: str, agents: str, skills: str) -> None:
+def _debug_output(
+    soul: str,
+    agents: str,
+    sources: list[PromptSource],
+    skills: str,
+) -> None:
     """DEBUG 级别记录 System Prompt 各来源贡献."""
+
     def _preview(text: str, max_chars: int = 120) -> str:
         return text[:max_chars].replace("\n", "\\n")
 
@@ -99,7 +161,15 @@ def _debug_output(soul: str, agents: str, skills: str) -> None:
         "  System Prompt 组装来源",
         f"  人设(SOUL):        {len(soul.encode('utf-8'))} 字节 | {_preview(soul)}",
         f"  项目规则(AGENTS):  {len(agents.encode('utf-8'))} 字节 | {_preview(agents)}",
-        f"  技能清单:          {len(skills.encode('utf-8'))} 字节 | {_preview(skills)}",
-        "─" * 40,
     ]
+
+    for source in sources:
+        rendered = source.render()
+        lines.append(
+            f"  {source.name}:{' ' * (18 - len(source.name))}"
+            f"  {len(rendered.encode('utf-8'))} 字节 | {_preview(rendered)}"
+        )
+
+    lines.append(f"  技能清单:          {len(skills.encode('utf-8'))} 字节 | {_preview(skills)}")
+    lines.append("─" * 40)
     logger.debug("\n".join(lines))

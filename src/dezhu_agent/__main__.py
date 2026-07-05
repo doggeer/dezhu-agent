@@ -14,10 +14,23 @@ import signal
 import sys
 from datetime import datetime, timezone
 
-from dezhu_agent.config import DEZHU_LOG_DIR, DEZHU_LOG_LEVEL, STREAM_MODE, THINKING_ENABLED
+from dezhu_agent.config import (
+    DEZHU_LOG_DIR,
+    DEZHU_LOG_LEVEL,
+    DEZHU_MEMORY_DIR,
+    MEMORY_FLUSH_MIN_TURNS,
+    MEMORY_NUDGE_INTERVAL,
+    STREAM_MODE,
+    THINKING_ENABLED,
+)
 from dezhu_agent.logging_config import _log_level_to_int, init_logging, set_session_context
 from dezhu_agent.loop import run_conversation
+from dezhu_agent.memory import MemorySnapshot, MemorySource, MemoryStore
+from dezhu_agent.memory.flush import FlushManager
+from dezhu_agent.memory.nudge import NudgeManager
+from dezhu_agent.prompt_assembler import register_prompt_source
 from dezhu_agent.storage import SQLiteBackend
+from dezhu_agent.tools.memory_tool import set_memory_store
 
 
 def _format_local_time(iso_string: str) -> str:
@@ -167,7 +180,13 @@ def _run_continue(storage: SQLiteBackend, limit: int) -> tuple[str, list | None]
         print(f"请输入 1-{len(sessions)} 之间的数字，或直接回车创建新会话。")
 
 
-def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: list | None) -> None:
+def _run_conversation_loop(
+    storage: SQLiteBackend,
+    session_id: str,
+    history: list | None,
+    nudge_manager: NudgeManager,
+    flush_manager: FlushManager,
+) -> None:
     """主对话循环."""
     current_history = history
 
@@ -181,6 +200,9 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
         if user_message.strip() == "/exit":
             break
 
+        # 压缩前 hook
+        pre_compress_hook = flush_manager.create_pre_compress_hook()
+
         if STREAM_MODE:
             final_reply, new_history, session_id = run_conversation(
                 user_message,
@@ -188,6 +210,7 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
                 on_stream_chunk=_make_stream_printer(),
                 storage=storage,
                 session_id=session_id,
+                pre_compress_hook=pre_compress_hook,
             )
         else:
             final_reply, new_history, session_id = run_conversation(
@@ -195,6 +218,7 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
                 history=current_history,
                 storage=storage,
                 session_id=session_id,
+                pre_compress_hook=pre_compress_hook,
             )
 
             if THINKING_ENABLED and new_history:
@@ -220,9 +244,17 @@ def _run_conversation_loop(storage: SQLiteBackend, session_id: str, history: lis
         set_session_context(session_id)
         current_history = new_history
 
+        # ---- Memory: nudge 审查 + flush 轮数 ----
+        nudge_manager.on_user_turn(new_history)
+        flush_manager.on_user_turn()
 
-def _register_exit_handlers(storage: SQLiteBackend, session_id: str) -> None:
-    """注册退出处理器：更新会话元数据."""
+
+def _register_exit_handlers(
+    storage: SQLiteBackend,
+    session_id: str,
+    flush_manager: FlushManager | None = None,
+) -> None:
+    """注册退出处理器：更新会话元数据 + 退出前 flush."""
     ended = False
 
     def _cleanup() -> None:
@@ -230,6 +262,31 @@ def _register_exit_handlers(storage: SQLiteBackend, session_id: str) -> None:
         if ended:
             return
         ended = True
+
+        # 退出前 flush（若未通过压缩触发）
+        if flush_manager is not None:
+            try:
+                from dezhu_agent.logging_config import get_logger
+
+                _log = get_logger(__name__)
+
+                # 检查轮数是否达到阈值
+                if flush_manager.turn_count >= MEMORY_FLUSH_MIN_TURNS:
+                    _log.info(
+                        "退出前 flush 触发: 用户对话 %d 轮",
+                        flush_manager.turn_count,
+                    )
+                    # 使用空消息列表执行一次独立 flush（无对话历史）
+                    flush_manager._do_flush([])
+                else:
+                    _log.debug(
+                        "退出前 flush 跳过: 用户对话 %d 轮 < 阈值 %d",
+                        flush_manager.turn_count,
+                        MEMORY_FLUSH_MIN_TURNS,
+                    )
+            except Exception:
+                pass
+
         try:
             now = datetime.now(timezone.utc).isoformat()
             # 使用 COUNT 查询获取消息数，避免加载全部消息
@@ -260,6 +317,19 @@ def main(argv: list[str] | None = None):
     log_level = _log_level_to_int("DEBUG" if args.debug else DEZHU_LOG_LEVEL)
     init_logging(log_dir=DEZHU_LOG_DIR, log_level=log_level)
 
+    # ---- Memory 子系统初始化 ----
+    memory_store = MemoryStore(DEZHU_MEMORY_DIR)
+    set_memory_store(memory_store)
+
+    # 生成冻结快照并注册为 PromptSource
+    snapshot = MemorySnapshot.from_store(memory_store)
+    memory_source = MemorySource(snapshot)
+    register_prompt_source(memory_source)
+
+    # 初始化 Nudge 和 Flush 管理器
+    nudge_manager = NudgeManager(memory_store, interval=MEMORY_NUDGE_INTERVAL)
+    flush_manager = FlushManager(memory_store, min_turns=MEMORY_FLUSH_MIN_TURNS)
+
     # 初始化存储
     storage = SQLiteBackend(args.db_path or "")
 
@@ -278,10 +348,10 @@ def main(argv: list[str] | None = None):
     set_session_context(session_id)
 
     # 注册退出处理
-    _register_exit_handlers(storage, session_id)
+    _register_exit_handlers(storage, session_id, flush_manager)
 
     # 进入对话循环
-    _run_conversation_loop(storage, session_id, history)
+    _run_conversation_loop(storage, session_id, history, nudge_manager, flush_manager)
 
 
 if __name__ == "__main__":

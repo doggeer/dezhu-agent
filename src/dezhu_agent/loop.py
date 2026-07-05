@@ -104,6 +104,7 @@ def run_conversation(
     on_stream_chunk: Callable | None = None,
     storage: StorageBackend | None = None,
     session_id: str | None = None,
+    pre_compress_hook: Callable | None = None,
 ) -> tuple[str, list[Message], str | None]:
     """运行对话循环，直到模型不再调用工具或 budget 耗尽.
 
@@ -163,7 +164,7 @@ def run_conversation(
     iteration = 0
     use_stream = STREAM_MODE and on_stream_chunk is not None
     _accumulated_content = ""  # 续写累积内容
-    _continuation_count = 0    # 续写尝试次数
+    _continuation_count = 0  # 续写尝试次数
 
     # 故障转移状态
     _current_provider_idx = 0
@@ -179,6 +180,7 @@ def run_conversation(
         aux_model=COMPRESSION_AUX_MODEL,
         aux_api_key=COMPRESSION_AUX_API_KEY,
         aux_base_url=COMPRESSION_AUX_BASE_URL,
+        pre_compress_hook=pre_compress_hook,
     )
 
     # 持久化辅助函数
@@ -218,10 +220,13 @@ def run_conversation(
                 _compression_config.preflight_threshold,
             )
             try:
+                # ---- Pre-compress hook (flush) ----
+                if _compression_config.pre_compress_hook is not None:
+                    _api_msgs_for_check = _compression_config.pre_compress_hook(_api_msgs_for_check)
                 result = compress(_api_msgs_for_check, _compression_config)
                 # 将压缩后的 dict 列表转回 Message 列表
                 messages = _dicts_to_messages(
-                    result.after_dicts if hasattr(result, 'after_dicts') else _api_msgs_for_check
+                    result.after_dicts if hasattr(result, "after_dicts") else _api_msgs_for_check
                 )
                 history_start_len = 0  # 压缩后重置基准，后续消息从 0 开始持久化
                 if result.layers_applied:
@@ -237,7 +242,8 @@ def run_conversation(
             except CompressionStuckError as e:
                 logger.error(
                     "Preflight 压缩 stuck: %d → %d tokens",
-                    e.before, e.after,
+                    e.before,
+                    e.after,
                 )
                 print(
                     f"\n⚠️ 会话已无法压缩（{e.before} → {e.after} tokens），请新开 session。\n",
@@ -272,14 +278,15 @@ def run_conversation(
             try:
                 # 压缩消息历史（不含 system prompt）
                 history_dicts = messages_to_api_messages(messages)
+                # ---- Pre-compress hook (flush) ----
+                if _compression_config.pre_compress_hook is not None:
+                    history_dicts = _compression_config.pre_compress_hook(history_dicts)
                 result = compress(history_dicts, _compression_config)
 
                 if result.layers_applied:
                     old_session_id = session_id
                     # 创建新 session（分裂）
-                    new_session_id = storage.create_session(
-                        parent_session_id=session_id
-                    )
+                    new_session_id = storage.create_session(parent_session_id=session_id)
                     logger.info(
                         "压缩导致 session 分裂: %s -> %s",
                         old_session_id[:8] if old_session_id else "-",
@@ -306,7 +313,8 @@ def run_conversation(
             except CompressionStuckError as e:
                 logger.error(
                     "主循环压缩 stuck: %d → %d tokens",
-                    e.before, e.after,
+                    e.before,
+                    e.after,
                 )
                 _persist()
                 print(
@@ -355,7 +363,9 @@ def run_conversation(
             reply_preview = reply[:500] + ("…" if len(reply) > 500 else "")
             logger.info(
                 "对话正常结束: %d 轮迭代, 回复长度 %d 字符, 回复=%s",
-                iteration, len(reply), reply_preview,
+                iteration,
+                len(reply),
+                reply_preview,
             )
             logger.debug("最终回复全文:\n%s", reply)
             return reply, messages, session_id
@@ -390,18 +400,14 @@ def run_conversation(
 
         elif response.finish_reason == "length":
             # thinking-budget 检测
-            if (
-                response.completion_tokens > 0
-                and not response.content
-                and not response.tool_calls
-            ):
+            if response.completion_tokens > 0 and not response.content and not response.tool_calls:
                 print("⚠️ 思考模式占用了全部输出空间", file=sys.stderr)
                 _persist()
                 reply = _accumulated_content or ""
                 return reply, messages, session_id
 
             _continuation_count += 1
-            _accumulated_content += (response.content or "")
+            _accumulated_content += response.content or ""
 
             if _continuation_count > MAX_CONTINUATION_ATTEMPTS:
                 logger.warning(
@@ -429,7 +435,8 @@ def run_conversation(
     reply_preview = last_assistant[:500] + ("…" if len(last_assistant) > 500 else "")
     logger.info(
         "对话 budget 耗尽: %d 轮后未完成, 最终回复=%s",
-        ITERATION_BUDGET, reply_preview,
+        ITERATION_BUDGET,
+        reply_preview,
     )
     return last_assistant, messages, session_id
 
@@ -464,7 +471,9 @@ def _make_api_call_with_recovery(
     while True:
         try:
             if use_stream:
-                resp = with_retry(_run_streaming_call, api_messages, api_tools, on_stream_chunk, model=model)
+                resp = with_retry(
+                    _run_streaming_call, api_messages, api_tools, on_stream_chunk, model=model
+                )
             else:
                 resp = with_retry(call_llm, api_messages, tools=api_tools, model=model)
             return {
@@ -500,18 +509,25 @@ def _make_api_call_with_recovery(
                         api_messages = [sys_msg] + messages_to_api_messages(local_messages)
                         logger.info(
                             "上下文压缩完成: %d -> %d tokens, 重试",
-                            result.before_tokens, result.after_tokens,
+                            result.before_tokens,
+                            result.after_tokens,
                         )
                     # 压缩后重试（含退避保护 + E3: 再次 overflow 时警告）
                     try:
                         if use_stream:
                             resp = with_retry(
                                 _run_streaming_call,
-                                api_messages, api_tools, on_stream_chunk, model=model,
+                                api_messages,
+                                api_tools,
+                                on_stream_chunk,
+                                model=model,
                             )
                         else:
                             resp = with_retry(
-                                call_llm, api_messages, tools=api_tools, model=model,
+                                call_llm,
+                                api_messages,
+                                tools=api_tools,
+                                model=model,
                             )
                         return {
                             "response": resp,
@@ -527,7 +543,9 @@ def _make_api_call_with_recovery(
                                 file=sys.stderr,
                             )
                             return {
-                                "response": LLMResponse(content="", finish_reason="stop", tool_calls=None),
+                                "response": LLMResponse(
+                                    content="", finish_reason="stop", tool_calls=None
+                                ),
                                 "_messages": local_messages,
                                 "_model": model,
                                 "_provider_idx": provider_idx,
@@ -541,7 +559,8 @@ def _make_api_call_with_recovery(
                     failover = _try_failover(provider_idx, model_idx)
                     if failover is None:
                         raise UnrecoverableError(
-                            f"上下文压缩 stuck 且所有备用模型已耗尽: {se}", original_error=e,
+                            f"上下文压缩 stuck 且所有备用模型已耗尽: {se}",
+                            original_error=e,
                         ) from e
                     provider_idx, model_idx, model, api_key, base_url = failover
                     set_client_credentials(api_key, base_url)
@@ -556,7 +575,8 @@ def _make_api_call_with_recovery(
                 if failover is None:
                     print("⚠️ 所有备用模型已耗尽", file=sys.stderr)
                     raise UnrecoverableError(
-                        f"所有备用模型已耗尽: {e}", original_error=e,
+                        f"所有备用模型已耗尽: {e}",
+                        original_error=e,
                     ) from e
                 provider_idx, model_idx, model, api_key, base_url = failover
                 set_client_credentials(api_key, base_url)
@@ -622,12 +642,14 @@ def _dicts_to_messages(dicts: list[dict]) -> list[Message]:
         # 跳过 system 消息（它不在 messages 列表中）
         if d.get("role") == "system":
             continue
-        messages.append(Message(
-            role=d.get("role", ""),
-            content=d.get("content"),
-            tool_calls=d.get("tool_calls"),
-            tool_call_id=d.get("tool_call_id"),
-            name=d.get("name"),
-            reasoning_content=d.get("reasoning_content"),
-        ))
+        messages.append(
+            Message(
+                role=d.get("role", ""),
+                content=d.get("content"),
+                tool_calls=d.get("tool_calls"),
+                tool_call_id=d.get("tool_call_id"),
+                name=d.get("name"),
+                reasoning_content=d.get("reasoning_content"),
+            )
+        )
     return messages

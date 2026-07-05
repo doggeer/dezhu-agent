@@ -46,12 +46,14 @@ DEZHU_DB_PATH: str = os.environ.get(
 )
 
 # 用户项目目录（AGENTS.md 所在目录），默认当前工作目录
-PROJECT_DIR: Path = Path(
-    os.environ.get("DEZHU_PROJECT_DIR", str(Path.cwd()))
-)
+PROJECT_DIR: Path = Path(os.environ.get("DEZHU_PROJECT_DIR", str(Path.cwd())))
 
 # --- 上下文压缩 ---
-COMPRESSION_ENABLED: bool = os.environ.get("COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+COMPRESSION_ENABLED: bool = os.environ.get("COMPRESSION_ENABLED", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 COMPRESSION_TRIGGER_RATIO: float = float(os.environ.get("COMPRESSION_TRIGGER_RATIO", "0.7"))
 COMPRESSION_PREFLIGHT_RATIO: float = float(os.environ.get("COMPRESSION_PREFLIGHT_RATIO", "0.8"))
 COMPRESSION_AUX_MODEL: str = os.environ.get("COMPRESSION_AUX_MODEL", "deepseek-v4-flash")
@@ -71,6 +73,14 @@ BACKOFF_BASE_DELAY: int = int(os.environ.get("DEZHU_BACKOFF_BASE_DELAY", "5"))
 BACKOFF_MAX_DELAY: int = int(os.environ.get("DEZHU_BACKOFF_MAX_DELAY", "60"))
 RETRY_TIMEOUT: int = int(os.environ.get("DEZHU_RETRY_TIMEOUT", "120"))
 
+# --- Memory 子系统 ---
+DEZHU_MEMORY_DIR: str = os.environ.get(
+    "DEZHU_MEMORY_DIR",
+    str(PROJECT_ROOT / ".dezhu-agent"),
+)
+MEMORY_NUDGE_INTERVAL: int = int(os.environ.get("DEZHU_MEMORY_NUDGE_INTERVAL", "10"))
+MEMORY_FLUSH_MIN_TURNS: int = int(os.environ.get("DEZHU_MEMORY_FLUSH_MIN_TURNS", "6"))
+
 
 # --- 提供商配置 ---
 def _parse_provider_config() -> list[dict]:
@@ -84,12 +94,14 @@ def _parse_provider_config() -> list[dict]:
     """
     raw = os.environ.get("DEZHU_PROVIDER_CONFIG", "")
     if not raw:
-        return [{
-            "name": "default",
-            "models": [MODEL_NAME],
-            "api_key": OPENAI_API_KEY,
-            "base_url": OPENAI_BASE_URL,
-        }]
+        return [
+            {
+                "name": "default",
+                "models": [MODEL_NAME],
+                "api_key": OPENAI_API_KEY,
+                "base_url": OPENAI_BASE_URL,
+            }
+        ]
 
     providers: list[dict] = []
     for group in raw.split("|"):
@@ -106,20 +118,24 @@ def _parse_provider_config() -> list[dict]:
         provider_upper = name.upper()
         api_key = os.environ.get(f"DEZHU_{provider_upper}_API_KEY") or OPENAI_API_KEY
         base_url = os.environ.get(f"DEZHU_{provider_upper}_BASE_URL") or OPENAI_BASE_URL
-        providers.append({
-            "name": name,
-            "models": models,
-            "api_key": api_key,
-            "base_url": base_url,
-        })
+        providers.append(
+            {
+                "name": name,
+                "models": models,
+                "api_key": api_key,
+                "base_url": base_url,
+            }
+        )
 
     if not providers:
-        return [{
-            "name": "default",
-            "models": [MODEL_NAME],
-            "api_key": OPENAI_API_KEY,
-            "base_url": OPENAI_BASE_URL,
-        }]
+        return [
+            {
+                "name": "default",
+                "models": [MODEL_NAME],
+                "api_key": OPENAI_API_KEY,
+                "base_url": OPENAI_BASE_URL,
+            }
+        ]
     return providers
 
 

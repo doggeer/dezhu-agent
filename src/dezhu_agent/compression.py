@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,7 @@ class CompressionConfig:
     head_rounds_layer2: int = 3
     tail_tokens_layer2: int = 20_000
     aux_timeout: float = 5.0
+    pre_compress_hook: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
 
     @property
     def trigger_threshold(self) -> int:
@@ -234,9 +236,7 @@ def truncate_old_tool_outputs(
 # ---------------------------------------------------------------------------
 
 
-def _align_to_assistant_boundary(
-    messages: list[dict[str, Any]], index: int
-) -> int:
+def _align_to_assistant_boundary(messages: list[dict[str, Any]], index: int) -> int:
     """将切点 index 吸附到下一个非 tool 消息。
 
     若 messages[index] 的 role == "tool"，向后移动直到找到非 tool 消息，
@@ -353,7 +353,7 @@ def _build_summary_request(
             if content:
                 lines.append(f"[Assistant]: {content}")
             if tool_calls:
-                for tc in (tool_calls if isinstance(tool_calls, list) else []):
+                for tc in tool_calls if isinstance(tool_calls, list) else []:
                     fn = tc.get("function", {})
                     lines.append(f"[Tool Call]: {fn.get('name', '')}({fn.get('arguments', '')})")
         elif role == "tool":
@@ -464,7 +464,9 @@ def compress(
 
     logger.info(
         "压缩开始: before=%d tokens, threshold=%d, messages=%d 条",
-        before, threshold, len(messages),
+        before,
+        threshold,
+        len(messages),
     )
 
     # 若本就低于阈值，不压缩
@@ -488,11 +490,13 @@ def compress(
         current = truncate_old_tool_outputs(current, config.max_rounds_layer1)
         layers_applied.append(1)
         after_l1 = estimate_tokens(current)
-        logger.info("Layer 1 完成: %d → %d tokens (%.1f%%)",
-                    before, after_l1, (1 - after_l1 / before) * 100)
+        logger.info(
+            "Layer 1 完成: %d → %d tokens (%.1f%%)", before, after_l1, (1 - after_l1 / before) * 100
+        )
         if after_l1 <= threshold:
-            logger.info("压缩完成 (Layer 1): %d → %d tokens, layers=%s",
-                        before, after_l1, layers_applied)
+            logger.info(
+                "压缩完成 (Layer 1): %d → %d tokens, layers=%s", before, after_l1, layers_applied
+            )
             return CompressionResult(
                 before_tokens=before,
                 after_tokens=after_l1,
@@ -511,7 +515,9 @@ def compress(
             if after >= int(before * _COMPRESSION_MIN_SHRINK) and after > threshold:
                 logger.error(
                     "压缩 stuck: 无中间段可压缩, %d → %d tokens (%.1f%%)",
-                    before, after, (1 - after / before) * 100,
+                    before,
+                    after,
+                    (1 - after / before) * 100,
                 )
                 raise CompressionStuckError(before, after)
             return CompressionResult(
@@ -522,8 +528,9 @@ def compress(
             )
 
         layers_applied.append(2)
-        logger.info("Layer 2 完成: head=%d 条, middle=%d 条, tail=%d 条",
-                    len(head), len(middle), len(tail))
+        logger.info(
+            "Layer 2 完成: head=%d 条, middle=%d 条, tail=%d 条", len(head), len(middle), len(tail)
+        )
 
         # ---- Layer 3: LLM 摘要 ----
         summary = summarize_middle(middle, config)
@@ -548,13 +555,17 @@ def compress(
         if after >= int(before * _COMPRESSION_MIN_SHRINK):
             logger.error(
                 "压缩 stuck: 降幅不足, %d → %d tokens (%.1f%%)",
-                before, after, (1 - after / before) * 100,
+                before,
+                after,
+                (1 - after / before) * 100,
             )
             raise CompressionStuckError(before, after)
 
         logger.info(
             "压缩完成: %d → %d tokens (%.1f%%), layers=%s%s",
-            before, after, (1 - after / before) * 100,
+            before,
+            after,
+            (1 - after / before) * 100,
             layers_applied,
             " [DEGRADED]" if degraded else "",
         )

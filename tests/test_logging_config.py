@@ -93,6 +93,7 @@ class TestLogOutput:
             assert "test.format" in content
             # 验证时间戳格式 YYYY-MM-DD HH:MM:SS
             import re
+
             assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", content)
 
 
@@ -182,8 +183,13 @@ class TestBoundary:
         # 通过 set_session_context 设置
         set_session_context("global-session")
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="test", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test",
+            args=(),
+            exc_info=None,
         )
         sf.filter(record)
         assert record.session == "[session=global-s]"
@@ -218,9 +224,7 @@ class TestSpecAcceptance:
         from dezhu_agent.llm import call_llm
 
         with patch("dezhu_agent.llm._get_client") as mock_client:
-            mock_client.return_value.chat.completions.create.side_effect = (
-                RuntimeError("测试异常")
-            )
+            mock_client.return_value.chat.completions.create.side_effect = RuntimeError("测试异常")
             try:
                 call_llm([{"role": "user", "content": "test"}])
             except RuntimeError:
@@ -240,12 +244,18 @@ class TestSpecAcceptance:
         def broken_tool(path: str) -> str:
             raise RuntimeError("工具执行失败")
 
-        reg.register(ToolDef(
-            name="broken_tool",
-            description="会抛异常的工具",
-            parameters={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-            fn=broken_tool,
-        ))
+        reg.register(
+            ToolDef(
+                name="broken_tool",
+                description="会抛异常的工具",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                fn=broken_tool,
+            )
+        )
         result = reg.execute("broken_tool", {"path": "/tmp/test"})
         assert "Error executing tool" in result
         assert "工具执行异常" in caplog.text

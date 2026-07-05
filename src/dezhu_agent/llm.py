@@ -185,10 +185,11 @@ def call_llm(
     tools_count = len(tools) if tools else 0
     logger.info(
         "LLM 非流式调用: model=%s, messages=%d 条, tools=%d 个",
-        model_name, len(messages), tools_count,
+        model_name,
+        len(messages),
+        tools_count,
     )
-    logger.debug("LLM 请求 payload:\nmodel=%s\nmessages=%s\ntools=%s",
-                 model_name, messages, tools)
+    logger.debug("LLM 请求 payload:\nmodel=%s\nmessages=%s\ntools=%s", model_name, messages, tools)
 
     try:
         client = _get_client()
@@ -197,7 +198,10 @@ def call_llm(
     except Exception as e:
         logger.error(
             "LLM API 调用异常: model=%s, messages=%d 条, exception=%s: %s",
-            model_name, len(messages), type(e).__name__, e,
+            model_name,
+            len(messages),
+            type(e).__name__,
+            e,
         )
         logger.debug("LLM API 异常 traceback:\n%s", traceback.format_exc())
         raise
@@ -216,13 +220,16 @@ def call_llm(
 
     logger.info(
         "LLM 响应: finish_reason=%s, prompt_tokens=%d (hit=%d, miss=%d), completion_tokens=%d",
-        finish_reason, prompt_tokens, hit, miss, completion_tokens,
+        finish_reason,
+        prompt_tokens,
+        hit,
+        miss,
+        completion_tokens,
     )
     if tool_calls:
         tool_names = [tc["function"]["name"] for tc in tool_calls]
         logger.info("LLM tool_calls: %s", tool_names)
-    logger.debug("LLM 响应全文: content=%s, reasoning=%s",
-                 message.content, reasoning_content)
+    logger.debug("LLM 响应全文: content=%s, reasoning=%s", message.content, reasoning_content)
 
     return LLMResponse(
         content=message.content,
@@ -253,10 +260,13 @@ def call_llm_stream(
     tools_count = len(tools) if tools else 0
     logger.info(
         "LLM 流式调用: model=%s, messages=%d 条, tools=%d 个",
-        model_name, len(messages), tools_count,
+        model_name,
+        len(messages),
+        tools_count,
     )
-    logger.debug("LLM 流式请求 payload:\nmodel=%s\nmessages=%s\ntools=%s",
-                 model_name, messages, tools)
+    logger.debug(
+        "LLM 流式请求 payload:\nmodel=%s\nmessages=%s\ntools=%s", model_name, messages, tools
+    )
 
     try:
         client = _get_client()
@@ -265,7 +275,10 @@ def call_llm_stream(
     except Exception as e:
         logger.error(
             "LLM 流式 API 调用异常: model=%s, messages=%d 条, exception=%s: %s",
-            model_name, len(messages), type(e).__name__, e,
+            model_name,
+            len(messages),
+            type(e).__name__,
+            e,
         )
         logger.debug("LLM 流式 API 异常 traceback:\n%s", traceback.format_exc())
         raise
@@ -317,14 +330,20 @@ def call_llm_stream(
                     idx = tc.index
                     while len(accumulated_tool_calls) <= idx:
                         accumulated_tool_calls.append(
-                            {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                            {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
                         )
                     if tc.id:
                         accumulated_tool_calls[idx]["id"] = tc.id
                     if tc.function and tc.function.name:
                         accumulated_tool_calls[idx]["function"]["name"] = tc.function.name
                     if tc.function and tc.function.arguments:
-                        accumulated_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                        accumulated_tool_calls[idx]["function"]["arguments"] += (
+                            tc.function.arguments
+                        )
 
             if finish:
                 sc.finish_reason = finish
@@ -339,7 +358,8 @@ def call_llm_stream(
     except Exception as e:
         logger.warning(
             "流式响应中断: %s, 已累积 content=%d chars",
-            e, len(accumulated_content),
+            e,
+            len(accumulated_content),
         )
         # E4: 有累积内容时设 finish_reason="length"，确保上层续写触发
         if accumulated_content:
@@ -347,14 +367,19 @@ def call_llm_stream(
 
     logger.info(
         "LLM 流式响应完成: finish_reason=%s, content_len=%d, cache_hit=%d, cache_miss=%d",
-        finish_reason, len(accumulated_content), cache_hit, cache_miss,
+        finish_reason,
+        len(accumulated_content),
+        cache_hit,
+        cache_miss,
     )
     if accumulated_tool_calls:
         tool_names = [tc["function"]["name"] for tc in accumulated_tool_calls]
         logger.info("LLM 流式 tool_calls: %s", tool_names)
     logger.debug(
         "LLM 流式响应全文: finish_reason=%s, content=%s, reasoning=%s",
-        finish_reason, accumulated_content, accumulated_reasoning,
+        finish_reason,
+        accumulated_content,
+        accumulated_reasoning,
     )
 
     return LLMResponse(
@@ -420,14 +445,17 @@ def with_retry(
                 # 指数退避: min(base_delay * 2^attempt + random_jitter, max_delay)
                 base = BACKOFF_BASE_DELAY
                 max_delay = BACKOFF_MAX_DELAY
-                delay = min(base * (2 ** attempt) + random.uniform(0, base), max_delay)
+                delay = min(base * (2**attempt) + random.uniform(0, base), max_delay)
                 # 不超过剩余时间
                 delay = min(delay, remaining)
                 attempt += 1
 
                 logger.warning(
                     "退避重试: attempt=%d, delay=%.1fs, category=%s, error=%s",
-                    attempt, delay, category.value, e,
+                    attempt,
+                    delay,
+                    category.value,
+                    e,
                 )
                 time.sleep(delay)
             else:

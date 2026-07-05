@@ -203,6 +203,7 @@ class TestLayer3:
 
     def test_aux_llm_unavailable_degraded(self, monkeypatch):
         """辅助 LLM 不可用时返回 None（降级）。"""
+
         # Mock OpenAI client to raise an exception
         def mock_init(*args, **kwargs):
             raise RuntimeError("Connection refused")
@@ -333,7 +334,11 @@ class TestCompressOrchestrator:
         """压缩结果中 after_dicts 包含压缩后的消息。"""
         msgs = [
             {"role": "user", "content": "q1"},
-            {"role": "tool", "content": "x" * 500, "tool_call_id": "1"},  # 足够长，裁剪后 token 减少
+            {
+                "role": "tool",
+                "content": "x" * 500,
+                "tool_call_id": "1",
+            },  # 足够长，裁剪后 token 减少
             {"role": "user", "content": "q2"},
             {"role": "assistant", "content": "a2"},
         ]
@@ -355,8 +360,6 @@ class TestCompressOrchestrator:
 
 class TestCompressionConfig:
     def test_thresholds_calculated(self):
-        config = CompressionConfig(
-            trigger_ratio=0.7, preflight_ratio=0.8, window_size=100000
-        )
+        config = CompressionConfig(trigger_ratio=0.7, preflight_ratio=0.8, window_size=100000)
         assert config.trigger_threshold == 70000
         assert config.preflight_threshold == 80000

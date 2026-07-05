@@ -29,8 +29,7 @@ class _TruncatingFormatter(logging.Formatter):
         formatted = super().format(record)
         if len(formatted) > _MAX_MESSAGE_CHARS:
             formatted = (
-                formatted[:_MAX_MESSAGE_CHARS]
-                + f"\n… [TRUNCATED {_MAX_MESSAGE_CHARS // 1024}KB]"
+                formatted[:_MAX_MESSAGE_CHARS] + f"\n… [TRUNCATED {_MAX_MESSAGE_CHARS // 1024}KB]"
             )
         return formatted
 

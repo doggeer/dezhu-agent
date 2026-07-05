@@ -50,11 +50,13 @@ def todo_write(items: str) -> str:
     for item in items_list:
         if not isinstance(item, dict):
             return f"错误：数组元素需要是对象，收到 {type(item).__name__}"
-        new_todos.append({
-            "id": f"t{uuid.uuid4().hex[:6]}",
-            "subject": item.get("subject", str(item)),
-            "status": "pending",
-        })
+        new_todos.append(
+            {
+                "id": f"t{uuid.uuid4().hex[:6]}",
+                "subject": item.get("subject", str(item)),
+                "status": "pending",
+            }
+        )
 
     state.todos = new_todos
     return f"已列出 {len(new_todos)} 个步骤"

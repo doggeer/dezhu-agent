@@ -107,9 +107,7 @@ class SQLiteBackend(StorageBackend):
 
         # ---- 向后兼容迁移 ----
         try:
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''"
-            )
+            conn.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
             conn.commit()
         except sqlite3.OperationalError as e:
             # 仅列已存在时跳过；其他错误（磁盘 I/O、锁等）向上传播
@@ -118,9 +116,7 @@ class SQLiteBackend(StorageBackend):
 
         # ---- 向后兼容迁移：parent_session_id ----
         try:
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT"
-            )
+            conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
             conn.commit()
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
@@ -272,7 +268,9 @@ class SQLiteBackend(StorageBackend):
                 result_map[key] = d
 
         # 按 session + sequence 排序
-        results = sorted(result_map.values(), key=lambda r: (r.get("session_id", ""), r.get("sequence", 0)))
+        results = sorted(
+            result_map.values(), key=lambda r: (r.get("session_id", ""), r.get("sequence", 0))
+        )
 
         # 填充上下文
         results = _enrich_context(self.conn, results)

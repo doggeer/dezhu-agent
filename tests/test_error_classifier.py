@@ -12,6 +12,7 @@ from dezhu_agent.error_classifier import ErrorCategory, classify_error
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+
 def _mock_api_status_error(status_code: int, body: dict | None = None) -> APIStatusError:
     """Create a mock APIStatusError with the given status_code and body."""
     mock = MagicMock(spec=APIStatusError)
@@ -23,6 +24,7 @@ def _mock_api_status_error(status_code: int, body: dict | None = None) -> APISta
 # ---------------------------------------------------------------------------
 # ErrorCategory enum
 # ---------------------------------------------------------------------------
+
 
 def test_error_category_has_all_expected_values():
     """ErrorCategory must include length, context_overflow, rate_limit, timeout,
@@ -44,6 +46,7 @@ def test_error_category_has_all_expected_values():
 # ---------------------------------------------------------------------------
 # classify_error: APIStatusError by status_code
 # ---------------------------------------------------------------------------
+
 
 def test_classify_429_is_rate_limit():
     err = _mock_api_status_error(429)
@@ -78,6 +81,7 @@ def test_classify_503_is_server_error():
 # ---------------------------------------------------------------------------
 # classify_error: 400 + body inspection
 # ---------------------------------------------------------------------------
+
 
 def test_classify_400_context_length_exceeded():
     """400 with body containing 'context' / 'length' / 'token' -> context_overflow."""
@@ -128,6 +132,7 @@ def test_classify_400_generic_body_is_context_overflow():
 # classify_error: timeout errors
 # ---------------------------------------------------------------------------
 
+
 def test_classify_api_timeout_is_timeout():
     err = MagicMock(spec=APITimeoutError)
     assert classify_error(err) == ErrorCategory.timeout
@@ -141,6 +146,7 @@ def test_classify_api_connection_error_is_timeout():
 # ---------------------------------------------------------------------------
 # classify_error: unknown exception re-raised
 # ---------------------------------------------------------------------------
+
 
 def test_classify_unknown_exception_reraises():
     original = ValueError("something went wrong")

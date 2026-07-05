@@ -84,14 +84,20 @@ class ToolRegistry:
             )
             _log.debug(
                 "工具执行详情: %s | 参数=%s | 耗时=%.1fms | 结果=%s",
-                name, args, elapsed_ms, result,
+                name,
+                args,
+                elapsed_ms,
+                result,
             )
             return result
         except Exception as e:
             elapsed_ms = (time.monotonic() - start) * 1000
             _log.error(
                 "工具执行异常: %s | 参数=%s | 耗时=%.1fms | 异常=%s",
-                name, args, elapsed_ms, e,
+                name,
+                args,
+                elapsed_ms,
+                e,
             )
             return f"Error executing tool '{name}': {e}"
 

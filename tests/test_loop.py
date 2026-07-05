@@ -554,9 +554,7 @@ class TestPersistence:
         mock_storage = MagicMock()
         mock_storage.save_messages = MagicMock()
 
-        reply, history, _ = run_conversation(
-            "hi", storage=mock_storage, session_id="test-sid"
-        )
+        reply, history, _ = run_conversation("hi", storage=mock_storage, session_id="test-sid")
         assert reply == "done"
         mock_storage.save_messages.assert_called_once()
         call_args = mock_storage.save_messages.call_args
@@ -619,9 +617,7 @@ class TestPersistence:
 
     @patch("dezhu_agent.loop.call_llm")
     @patch("dezhu_agent.loop.build_system_prompt")
-    def test_p5_system_prompt_saved_on_new_session(
-        self, mock_build_sp, mock_call_llm
-    ):
+    def test_p5_system_prompt_saved_on_new_session(self, mock_build_sp, mock_call_llm):
         """P5: 新会话时 system_prompt 被组装并持久化到 storage."""
         from unittest.mock import MagicMock
 
@@ -639,9 +635,7 @@ class TestPersistence:
 
     @patch("dezhu_agent.loop.call_llm")
     @patch("dezhu_agent.loop.build_system_prompt")
-    def test_p6_system_prompt_reused_on_continue(
-        self, mock_build_sp, mock_call_llm
-    ):
+    def test_p6_system_prompt_reused_on_continue(self, mock_build_sp, mock_call_llm):
         """P6: --continue 恢复会话时复用已有 system_prompt，不重新组装."""
         from unittest.mock import MagicMock
 
@@ -680,9 +674,7 @@ class TestErrorRecovery:
     @patch("dezhu_agent.loop._make_api_call_with_recovery")
     def test_n2_continuation_limit(self, mock_recovery):
         """N2: 续写次数达到上限时停止（1 初始 + 3 续写 = 4 次调用）."""
-        mock_recovery.side_effect = lambda *a, **kw: {
-            "response": _mock_llm("X", "length")
-        }
+        mock_recovery.side_effect = lambda *a, **kw: {"response": _mock_llm("X", "length")}
 
         reply, _history, _ = run_conversation("一直写下去")
         # MAX_CONTINUATION_ATTEMPTS=3, 1 initial + 3 continuation = 4 calls, reply = "XXXX"
@@ -693,12 +685,14 @@ class TestErrorRecovery:
     def test_e2_thinking_budget(self, mock_recovery):
         """E2: 思考模式占满全部输出空间，只调用 1 次不续写."""
         mock_recovery.side_effect = [
-            {"response": LLMResponse(
-                content=None,
-                finish_reason="length",
-                tool_calls=None,
-                completion_tokens=10,
-            )}
+            {
+                "response": LLMResponse(
+                    content=None,
+                    finish_reason="length",
+                    tool_calls=None,
+                    completion_tokens=10,
+                )
+            }
         ]
 
         reply, _history, _ = run_conversation("复杂问题")
@@ -802,7 +796,11 @@ class TestApiCallRecovery:
             _mock_llm("recovered", "stop"),
         ]
         mock_failover.return_value = (
-            0, 1, "backup-model", "sk-backup", "https://backup.api",
+            0,
+            1,
+            "backup-model",
+            "sk-backup",
+            "https://backup.api",
         )
 
         kwargs = self._default_kwargs()
@@ -819,7 +817,10 @@ class TestApiCallRecovery:
     @patch("dezhu_agent.loop.estimate_tokens")
     @patch("dezhu_agent.loop.with_retry")
     def test_n3_context_overflow_compress_retry(
-        self, mock_with_retry, mock_estimate, mock_compress,
+        self,
+        mock_with_retry,
+        mock_estimate,
+        mock_compress,
     ):
         """N3: 上下文超长 → 压缩后重试成功."""
         import openai
@@ -860,7 +861,11 @@ class TestApiCallRecovery:
             _mock_llm("recovered", "stop"),
         ]
         mock_failover.return_value = (
-            0, 1, "backup", "sk-key", "https://api",
+            0,
+            1,
+            "backup",
+            "sk-key",
+            "https://api",
         )
 
         kwargs = self._default_kwargs()
@@ -902,7 +907,11 @@ class TestApiCallRecovery:
     @patch("dezhu_agent.loop.estimate_tokens")
     @patch("dezhu_agent.loop.with_retry")
     def test_e3_compress_retry_still_overflow(
-        self, mock_with_retry, mock_estimate, mock_compress, capsys,
+        self,
+        mock_with_retry,
+        mock_estimate,
+        mock_compress,
+        capsys,
     ):
         """E3: 压缩成功但重试后仍然上下文超长 → 返回空内容不崩溃."""
         import openai
@@ -946,7 +955,12 @@ class TestApiCallRecovery:
     @patch("dezhu_agent.loop.estimate_tokens")
     @patch("dezhu_agent.loop.with_retry")
     def test_b3_compression_stuck_failover(
-        self, mock_with_retry, mock_estimate, mock_compress, mock_failover, capsys,
+        self,
+        mock_with_retry,
+        mock_estimate,
+        mock_compress,
+        mock_failover,
+        capsys,
     ):
         """B3: 压缩 stuck → 抛 UnrecoverableError → 故障转移成功."""
         import openai
@@ -968,7 +982,11 @@ class TestApiCallRecovery:
         mock_estimate.return_value = 10000
         mock_compress.side_effect = CompressionStuckError(10000, 9500)
         mock_failover.return_value = (
-            0, 1, "backup-model", "sk-backup", "https://backup.api",
+            0,
+            1,
+            "backup-model",
+            "sk-backup",
+            "https://backup.api",
         )
 
         kwargs = self._default_kwargs()
@@ -988,7 +1006,9 @@ class TestWithRetry:
     @patch("dezhu_agent.llm.time.sleep")
     @patch("dezhu_agent.llm.call_llm")
     def test_b5_keyboard_interrupt_during_backoff(
-        self, mock_call_llm, mock_sleep,
+        self,
+        mock_call_llm,
+        mock_sleep,
     ):
         """B5: 退避重试期间 KeyboardInterrupt 不被吞没."""
         import openai

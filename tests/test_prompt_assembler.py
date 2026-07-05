@@ -20,9 +20,7 @@ class TestSoulLoading:
         """SOUL.md 存在且非空 → 内容替代 SYSTEM_PROMPT_TEMPLATE."""
         soul_file = tmp_path / "SOUL.md"
         soul_file.write_text("我是自定义人设", encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler._SOUL_PATH", soul_file
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler._SOUL_PATH", soul_file)
         result = assemble_system_prompt()
         assert "我是自定义人设" in result
         assert result.startswith("我是自定义人设")
@@ -37,9 +35,7 @@ class TestSoulLoading:
         """SOUL.md 存在但为空 → 使用 SYSTEM_PROMPT_TEMPLATE."""
         soul_file = tmp_path / "SOUL.md"
         soul_file.write_text("", encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler._SOUL_PATH", soul_file
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler._SOUL_PATH", soul_file)
         result = assemble_system_prompt()
         assert "DeZhu Agent" in result  # 来自默认模板
 
@@ -48,9 +44,7 @@ class TestSoulLoading:
         soul_file = tmp_path / "SOUL.md"
         content = "BOM 测试"
         soul_file.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler._SOUL_PATH", soul_file
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler._SOUL_PATH", soul_file)
         result = _read_file(soul_file)
         assert result == content
         assert "\ufeff" not in result
@@ -74,9 +68,7 @@ class TestAgentsLoading:
         """AGENTS.md 存在 → 拼入 system prompt（在 SOUL.md 之后）."""
         agents_file = tmp_path / "AGENTS.md"
         agents_file.write_text("项目规则内容", encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         result = assemble_system_prompt()
         assert "项目规则内容" in result
         # 验证顺序：SOUL 在前，AGENTS 在后
@@ -86,9 +78,7 @@ class TestAgentsLoading:
 
     def test_agents_not_exists_silently_skipped(self, tmp_path, monkeypatch):
         """AGENTS.md 不存在 → 静默跳过."""
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         result = _load_agents()
         assert result == ""
 
@@ -97,9 +87,7 @@ class TestAgentsLoading:
         agents_file = tmp_path / "AGENTS.md"
         long_content = "A" * 2500
         agents_file.write_text(long_content, encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         result = _load_agents()
         assert len(result) < 2500
         assert "已截断" in result
@@ -114,9 +102,7 @@ class TestAssembly:
 
     def test_no_external_files_outputs_template_only(self, tmp_path, monkeypatch):
         """无 SOUL.md、无 AGENTS.md → 输出仅 SYSTEM_PROMPT_TEMPLATE."""
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         result = assemble_system_prompt()
         assert result == SYSTEM_PROMPT_TEMPLATE
 
@@ -130,9 +116,7 @@ class TestAssembly:
 
     def test_tools_not_written_to_prompt_text(self, tmp_path, monkeypatch):
         """工具定义不写入 system prompt 文本（即使 tools 非空）."""
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         tools = [{"name": "test_tool", "description": "a test", "parameters": {}}]
         result = assemble_system_prompt(tools)
         assert "test_tool" not in result
@@ -141,12 +125,8 @@ class TestAssembly:
         """特殊字符 { } \" \\n 在组装后保持原样."""
         soul_file = tmp_path / "SOUL.md"
         soul_file.write_text('{"key": "value"}\nspecial: { braces }', encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler._SOUL_PATH", soul_file
-        )
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler._SOUL_PATH", soul_file)
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         result = assemble_system_prompt()
         assert '{"key": "value"}' in result
         assert "{ braces }" in result
@@ -162,9 +142,7 @@ class TestDebug:
         """DEBUG 级别 → 日志中包含组装来源信息."""
         import logging
 
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         caplog.set_level(logging.DEBUG, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
         assert "System Prompt 组装来源" in caplog.text
@@ -175,9 +153,7 @@ class TestDebug:
         """INFO 级别 → 日志中无 Debug 输出."""
         import logging
 
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         caplog.set_level(logging.INFO, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
         assert "System Prompt 组装来源" not in caplog.text
@@ -192,12 +168,8 @@ class TestDebug:
         # 中文内容：每字符 3 字节，120+ 字符触发截断
         long_content = "人设" * 80  # 160 chars, 480 bytes
         soul_file.write_text(long_content, encoding="utf-8")
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler._SOUL_PATH", soul_file
-        )
-        monkeypatch.setattr(
-            "dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path
-        )
+        monkeypatch.setattr("dezhu_agent.prompt_assembler._SOUL_PATH", soul_file)
+        monkeypatch.setattr("dezhu_agent.prompt_assembler.PROJECT_DIR", tmp_path)
         caplog.set_level(logging.DEBUG, logger="dezhu_agent.prompt_assembler")
         assemble_system_prompt()
         # 验证字节数（中文每字符 3 字节 → 480）

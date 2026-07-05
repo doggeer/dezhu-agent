@@ -38,7 +38,9 @@ class TestCRUD:
         sid = db.create_session()
         msgs = [
             _make_msg(role="user", content="你好"),
-            _make_msg(role="assistant", content="你好！有什么可以帮你的？", reasoning_content="思考..."),
+            _make_msg(
+                role="assistant", content="你好！有什么可以帮你的？", reasoning_content="思考..."
+            ),
         ]
         db.save_messages(sid, msgs)
 
@@ -355,6 +357,7 @@ class TestFts5Escape:
 
 
 # ---- system_prompt 列 ----
+
 
 class TestSystemPrompt:
     """system_prompt 列读写."""

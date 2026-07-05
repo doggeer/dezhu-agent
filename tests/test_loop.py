@@ -1,12 +1,13 @@
 """核心循环测试 — mock LLM API，覆盖全部验收标准."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from dezhu_agent.__main__ import main
-from dezhu_agent.llm import LLMResponse, StreamChunk
-from dezhu_agent.loop import run_conversation
+from dezhu_agent.compression import CompressionConfig
+from dezhu_agent.llm import LLMResponse, StreamChunk, UnrecoverableError, with_retry
+from dezhu_agent.loop import _make_api_call_with_recovery, run_conversation
 from dezhu_agent.messages import Message
 
 # --- 辅助函数：构建模拟的 LLM 返回值 ---
@@ -110,14 +111,12 @@ class TestNormalPath:
 class TestAbnormalPath:
     """E1-E4: 异常路径验收."""
 
-    @patch("dezhu_agent.loop.call_llm")
-    def test_e1_api_failure(self, mock_call_llm):
-        """E1: API 调用失败，向上抛出异常（fail-fast）."""
-        from openai import APIError
+    @patch("dezhu_agent.loop._make_api_call_with_recovery")
+    def test_e1_api_failure(self, mock_recovery):
+        """E1: API 调用失败，向上抛出 UnrecoverableError（fail-fast）."""
+        mock_recovery.side_effect = UnrecoverableError("test")
 
-        mock_call_llm.side_effect = APIError("Connection failed", request=None, body=None)
-
-        with pytest.raises(APIError, match="Connection failed"):
+        with pytest.raises(UnrecoverableError, match="test"):
             run_conversation("你好")
 
     @patch("dezhu_agent.loop.call_llm")
@@ -658,3 +657,352 @@ class TestPersistence:
         mock_build_sp.assert_not_called()
         # 验证：save_system_prompt 没有被调用（不需要重新保存）
         mock_storage.save_system_prompt.assert_not_called()
+
+
+# ==================== 错误恢复 ====================
+
+
+class TestErrorRecovery:
+    """N1-N2 / E2: 主循环恢复路径验收."""
+
+    @patch("dezhu_agent.loop._make_api_call_with_recovery")
+    def test_n1_continuation_success(self, mock_recovery):
+        """N1: 模型输出被截断（length），自动继续调用直到 stop，拼接内容."""
+        mock_recovery.side_effect = [
+            {"response": _mock_llm("Part1", "length")},
+            {"response": _mock_llm("Part2", "stop")},
+        ]
+
+        reply, _history, _ = run_conversation("写一篇长文章")
+        assert reply == "Part1Part2"
+        assert mock_recovery.call_count == 2
+
+    @patch("dezhu_agent.loop._make_api_call_with_recovery")
+    def test_n2_continuation_limit(self, mock_recovery):
+        """N2: 续写次数达到上限时停止（1 初始 + 3 续写 = 4 次调用）."""
+        mock_recovery.side_effect = lambda *a, **kw: {
+            "response": _mock_llm("X", "length")
+        }
+
+        reply, _history, _ = run_conversation("一直写下去")
+        # MAX_CONTINUATION_ATTEMPTS=3, 1 initial + 3 continuation = 4 calls, reply = "XXXX"
+        assert mock_recovery.call_count == 4
+        assert reply == "XXXX"
+
+    @patch("dezhu_agent.loop._make_api_call_with_recovery")
+    def test_e2_thinking_budget(self, mock_recovery):
+        """E2: 思考模式占满全部输出空间，只调用 1 次不续写."""
+        mock_recovery.side_effect = [
+            {"response": LLMResponse(
+                content=None,
+                finish_reason="length",
+                tool_calls=None,
+                completion_tokens=10,
+            )}
+        ]
+
+        reply, _history, _ = run_conversation("复杂问题")
+        assert mock_recovery.call_count == 1
+        assert reply == ""
+
+    @patch("dezhu_agent.loop._make_api_call_with_recovery")
+    def test_b6_streaming_length_continuation(self, mock_recovery):
+        """B6: 流式/非流式 length 续写，多次拼接直到 stop."""
+        mock_recovery.side_effect = [
+            {"response": _mock_llm("Part1", "length")},
+            {"response": _mock_llm("Part1", "length")},
+            {"response": _mock_llm("Part2", "stop")},
+        ]
+
+        reply, _history, _ = run_conversation("写一篇长文章")
+        assert reply == "Part1Part1Part2"
+        assert mock_recovery.call_count == 3
+
+
+# ==================== API 调用恢复 ====================
+
+
+class TestApiCallRecovery:
+    """N4 / E1 / N6: _make_api_call_with_recovery 函数级别测试."""
+
+    @staticmethod
+    def _default_kwargs(**overrides):
+        """构建 _make_api_call_with_recovery 的最小参数集."""
+        defaults = dict(
+            use_stream=False,
+            api_messages=[{"role": "user", "content": "hello"}],
+            api_tools=None,
+            on_stream_chunk=None,
+            messages=[Message(role="user", content="hello")],
+            system_prompt="You are a helpful assistant.",
+            compression_config=CompressionConfig(enabled=False),
+            current_model=None,
+            current_provider_idx=0,
+            current_model_idx=0,
+        )
+        defaults.update(overrides)
+        return defaults
+
+    @patch("dezhu_agent.loop.with_retry")
+    def test_n4_backoff_retry_success(self, mock_with_retry):
+        """N4: with_retry 首次抛出 429，第二次返回 stop；验证 with_retry 被调用."""
+        import openai
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "rate limit",
+                response=Mock(status_code=429),
+                body=None,
+            ),
+            _mock_llm("ok", "stop"),
+        ]
+
+        kwargs = self._default_kwargs()
+
+        # 第一次调用抛出异常
+        with pytest.raises(openai.APIStatusError):
+            _make_api_call_with_recovery(**kwargs)
+
+        # 第二次调用成功
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "ok"
+        assert mock_with_retry.call_count == 2
+
+    @patch("dezhu_agent.loop._try_failover")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_e1_all_exhausted(self, mock_with_retry, mock_failover):
+        """E1: 所有备用模型耗尽时抛出 UnrecoverableError."""
+        import openai
+
+        mock_with_retry.side_effect = openai.APIStatusError(
+            "unauthorized",
+            response=Mock(status_code=401),
+            body=None,
+        )
+        mock_failover.return_value = None
+
+        kwargs = self._default_kwargs()
+
+        with pytest.raises(UnrecoverableError, match="所有备用模型已耗尽"):
+            _make_api_call_with_recovery(**kwargs)
+
+    @patch("dezhu_agent.loop._try_failover")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_n6_failover_success(self, mock_with_retry, mock_failover):
+        """N6: 故障转移成功，使用备用模型返回结果."""
+        import openai
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "unauthorized",
+                response=Mock(status_code=401),
+                body=None,
+            ),
+            _mock_llm("recovered", "stop"),
+        ]
+        mock_failover.return_value = (
+            0, 1, "backup-model", "sk-backup", "https://backup.api",
+        )
+
+        kwargs = self._default_kwargs()
+
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "recovered"
+        # 验证 _try_failover 被调用
+        mock_failover.assert_called_once_with(0, 0)
+        # 验证 with_retry 被调用了两次（第一次失败，failover 后第二次成功）
+        assert mock_with_retry.call_count == 2
+
+    @patch("dezhu_agent.loop.compress")
+    @patch("dezhu_agent.loop.estimate_tokens")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_n3_context_overflow_compress_retry(
+        self, mock_with_retry, mock_estimate, mock_compress,
+    ):
+        """N3: 上下文超长 → 压缩后重试成功."""
+        import openai
+        from unittest.mock import MagicMock
+
+        from dezhu_agent.compression import CompressionResult
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "context length exceeded",
+                response=mock_response,
+                body={"error": {"code": "context_length_exceeded"}},
+            ),
+            _mock_llm("ok", "stop"),
+        ]
+        mock_estimate.return_value = 10000
+        mock_compress.return_value = CompressionResult(
+            before_tokens=10000,
+            after_tokens=1000,
+            layers_applied=[1],
+            after_dicts=[{"role": "user", "content": "hello"}],
+        )
+
+        kwargs = self._default_kwargs()
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "ok"
+
+    @patch("dezhu_agent.loop._try_failover")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_n5_backoff_timeout_failover(self, mock_with_retry, mock_failover):
+        """N5: 退避超时 → 故障转移成功."""
+        mock_with_retry.side_effect = [
+            UnrecoverableError("退避超时"),
+            _mock_llm("recovered", "stop"),
+        ]
+        mock_failover.return_value = (
+            0, 1, "backup", "sk-key", "https://api",
+        )
+
+        kwargs = self._default_kwargs()
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "recovered"
+
+    @patch("dezhu_agent.loop._try_failover")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_n7_cross_provider_failover(self, mock_with_retry, mock_failover):
+        """N7: 同提供商耗尽 → 跨提供商故障转移成功."""
+        import openai
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "unauthorized",
+                response=Mock(status_code=401),
+                body=None,
+            ),
+            openai.APIStatusError(
+                "unauthorized",
+                response=Mock(status_code=401),
+                body=None,
+            ),
+            _mock_llm("cross-provider-ok", "stop"),
+        ]
+        mock_failover.side_effect = [
+            (0, 1, "backup-same", "sk-key", "https://same.api"),
+            (1, 0, "gpt4", "sk-openai", "https://api.openai.com"),
+        ]
+
+        kwargs = self._default_kwargs()
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "cross-provider-ok"
+        assert mock_failover.call_count >= 2
+
+    @patch("dezhu_agent.loop.compress")
+    @patch("dezhu_agent.loop.estimate_tokens")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_e3_compress_retry_still_overflow(
+        self, mock_with_retry, mock_estimate, mock_compress, capsys,
+    ):
+        """E3: 压缩成功但重试后仍然上下文超长 → 返回空内容不崩溃."""
+        import openai
+        from unittest.mock import MagicMock
+
+        from dezhu_agent.compression import CompressionResult
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "context length exceeded",
+                response=mock_response,
+                body={"error": {"code": "context_length_exceeded"}},
+            ),
+            openai.APIStatusError(
+                "context length exceeded again",
+                response=mock_response,
+                body={"error": {"code": "context_length_exceeded"}},
+            ),
+        ]
+        mock_estimate.return_value = 10000
+        mock_compress.return_value = CompressionResult(
+            before_tokens=10000,
+            after_tokens=1000,
+            layers_applied=[1],
+            after_dicts=[{"role": "user", "content": "hello"}],
+        )
+
+        kwargs = self._default_kwargs()
+        result = _make_api_call_with_recovery(**kwargs)
+        # 不崩溃，返回空 stop
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == ""
+        captured = capsys.readouterr()
+        assert "压缩后上下文仍然超长" in captured.err
+
+    @patch("dezhu_agent.loop._try_failover")
+    @patch("dezhu_agent.loop.compress")
+    @patch("dezhu_agent.loop.estimate_tokens")
+    @patch("dezhu_agent.loop.with_retry")
+    def test_b3_compression_stuck_failover(
+        self, mock_with_retry, mock_estimate, mock_compress, mock_failover, capsys,
+    ):
+        """B3: 压缩 stuck → 抛 UnrecoverableError → 故障转移成功."""
+        import openai
+        from unittest.mock import MagicMock
+
+        from dezhu_agent.compression import CompressionStuckError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+
+        mock_with_retry.side_effect = [
+            openai.APIStatusError(
+                "context length exceeded",
+                response=mock_response,
+                body={"error": {"code": "context_length_exceeded"}},
+            ),
+            _mock_llm("failover-ok", "stop"),
+        ]
+        mock_estimate.return_value = 10000
+        mock_compress.side_effect = CompressionStuckError(10000, 9500)
+        mock_failover.return_value = (
+            0, 1, "backup-model", "sk-backup", "https://backup.api",
+        )
+
+        kwargs = self._default_kwargs()
+        result = _make_api_call_with_recovery(**kwargs)
+        assert result["response"].finish_reason == "stop"
+        assert result["response"].content == "failover-ok"
+        captured = capsys.readouterr()
+        assert "上下文压缩无法减小" in captured.err
+
+
+# ==================== with_retry 异常路径 ====================
+
+
+class TestWithRetry:
+    """B5: with_retry 错误传播测试."""
+
+    @patch("dezhu_agent.llm.time.sleep")
+    @patch("dezhu_agent.llm.call_llm")
+    def test_b5_keyboard_interrupt_during_backoff(
+        self, mock_call_llm, mock_sleep,
+    ):
+        """B5: 退避重试期间 KeyboardInterrupt 不被吞没."""
+        import openai
+        from unittest.mock import Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 429
+
+        mock_call_llm.side_effect = openai.APIStatusError(
+            "rate limit",
+            response=mock_response,
+            body=None,
+        )
+        mock_sleep.side_effect = KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            with_retry(mock_call_llm, [{"role": "user", "content": "hi"}])

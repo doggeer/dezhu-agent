@@ -65,3 +65,62 @@ DEZHU_LOG_DIR: str = os.environ.get(
     "DEZHU_LOG_DIR",
     str(PROJECT_ROOT / "logs"),
 )
+
+# --- 退避参数 ---
+BACKOFF_BASE_DELAY: int = int(os.environ.get("DEZHU_BACKOFF_BASE_DELAY", "5"))
+BACKOFF_MAX_DELAY: int = int(os.environ.get("DEZHU_BACKOFF_MAX_DELAY", "60"))
+RETRY_TIMEOUT: int = int(os.environ.get("DEZHU_RETRY_TIMEOUT", "120"))
+
+
+# --- 提供商配置 ---
+def _parse_provider_config() -> list[dict]:
+    """从环境变量解析多提供商配置.
+
+    DEZHU_PROVIDER_CONFIG 格式: provider1:modelA,modelB|provider2:modelC
+
+    每个提供商的 api_key 和 base_url 从 DEZHU_<NAME>_API_KEY / DEZHU_<NAME>_BASE_URL
+    读取，fallback 到全局 OPENAI_API_KEY / OPENAI_BASE_URL。
+    若 DEZHU_PROVIDER_CONFIG 未设置，返回仅含主模型的默认配置。
+    """
+    raw = os.environ.get("DEZHU_PROVIDER_CONFIG", "")
+    if not raw:
+        return [{
+            "name": "default",
+            "models": [MODEL_NAME],
+            "api_key": OPENAI_API_KEY,
+            "base_url": OPENAI_BASE_URL,
+        }]
+
+    providers: list[dict] = []
+    for group in raw.split("|"):
+        group = group.strip()
+        if not group:
+            continue
+        if ":" not in group:
+            continue
+        name, models_str = group.split(":", 1)
+        name = name.strip()
+        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        if not models:
+            continue
+        provider_upper = name.upper()
+        api_key = os.environ.get(f"DEZHU_{provider_upper}_API_KEY") or OPENAI_API_KEY
+        base_url = os.environ.get(f"DEZHU_{provider_upper}_BASE_URL") or OPENAI_BASE_URL
+        providers.append({
+            "name": name,
+            "models": models,
+            "api_key": api_key,
+            "base_url": base_url,
+        })
+
+    if not providers:
+        return [{
+            "name": "default",
+            "models": [MODEL_NAME],
+            "api_key": OPENAI_API_KEY,
+            "base_url": OPENAI_BASE_URL,
+        }]
+    return providers
+
+
+PROVIDER_CONFIGS: list[dict] = _parse_provider_config()

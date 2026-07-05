@@ -23,9 +23,19 @@ from dezhu_agent.config import (
     COMPRESSION_TRIGGER_RATIO,
     COMPRESSION_WINDOW_SIZE,
     ITERATION_BUDGET,
+    PROVIDER_CONFIGS,
     STREAM_MODE,
 )
-from dezhu_agent.llm import LLMResponse, call_llm, call_llm_stream
+from dezhu_agent.error_classifier import ErrorCategory, classify_error
+from dezhu_agent.llm import (
+    LLMResponse,
+    UnrecoverableError,
+    call_llm,
+    call_llm_stream,
+    reset_client_connection,
+    set_client_credentials,
+    with_retry,
+)
 from dezhu_agent.logging_config import get_logger, set_session_context
 from dezhu_agent.messages import Message, messages_to_api_messages
 from dezhu_agent.prompt import build_system_prompt, build_tools_for_api
@@ -35,6 +45,57 @@ if TYPE_CHECKING:
     from dezhu_agent.storage import StorageBackend
 
 logger = get_logger(__name__)
+
+# ---- 续写常量 ----
+
+CONTINUE_MESSAGE = (
+    "Your response was cut off. Continue EXACTLY from where you stopped. "
+    "Do not restart, do not repeat, do not summarize what came before."
+)
+MAX_CONTINUATION_ATTEMPTS = 3
+
+
+def _try_failover(
+    current_provider_index: int,
+    current_model_index: int,
+) -> tuple[int, int, str, str | None, str | None] | None:
+    """尝试故障转移到下一个可用模型。
+
+    Returns:
+        (provider_idx, model_idx, model_name, api_key, base_url) 或 None（全部耗尽）。
+    """
+    provider_configs = PROVIDER_CONFIGS
+
+    # 先尝试同提供商的下一个模型
+    if current_provider_index < len(provider_configs):
+        provider = provider_configs[current_provider_index]
+        next_model_idx = current_model_index + 1
+        if next_model_idx < len(provider["models"]):
+            model_name = provider["models"][next_model_idx]
+            print(
+                f"⚠️ 主模型不可用，已切换到备用模型 {model_name}",
+                file=sys.stderr,
+            )
+            return (
+                current_provider_index,
+                next_model_idx,
+                model_name,
+                provider["api_key"],
+                provider["base_url"],
+            )
+
+    # 同提供商耗尽，尝试下一个提供商
+    for pi in range(current_provider_index + 1, len(provider_configs)):
+        provider = provider_configs[pi]
+        if provider["models"]:
+            model_name = provider["models"][0]
+            print(
+                f"⚠️ 主模型不可用，已切换到备用模型 {model_name}",
+                file=sys.stderr,
+            )
+            return (pi, 0, model_name, provider["api_key"], provider["base_url"])
+
+    return None  # 全部耗尽
 
 
 def run_conversation(
@@ -101,6 +162,13 @@ def run_conversation(
 
     iteration = 0
     use_stream = STREAM_MODE and on_stream_chunk is not None
+    _accumulated_content = ""  # 续写累积内容
+    _continuation_count = 0    # 续写尝试次数
+
+    # 故障转移状态
+    _current_provider_idx = 0
+    _current_model_idx = 0
+    _current_model: str | None = None  # None = 使用默认 MODEL_NAME
 
     # ---- 压缩配置 ----
     _compression_config = CompressionConfig(
@@ -123,6 +191,21 @@ def run_conversation(
     # 重建 system prompt（压缩后复用，不含 TaskState——TaskState 每轮动态拼接）
     def _rebuild_prompt() -> str:
         return build_system_prompt(tools)
+
+    # ---- 连接健康检查 + 主模型恢复 ----
+    reset_client_connection()
+    if _current_model is not None:
+        # 当前运行在备用模型上，尝试恢复主模型
+        logger.info("尝试恢复主模型...")
+        try:
+            _restore_primary_model()
+            _current_model = None
+            _current_provider_idx = 0
+            _current_model_idx = 0
+            _apply_provider_credentials(0)
+            logger.info("主模型恢复成功")
+        except Exception:
+            logger.info("主模型恢复失败，继续使用备用模型 %s", _current_model)
 
     # ---- Preflight 压缩（步骤 11） ----
     if _compression_config.enabled and storage is not None and session_id is not None:
@@ -232,11 +315,28 @@ def run_conversation(
                 )
                 return "会话已无法压缩，请新开 session。", messages, session_id
 
-        if use_stream:
-            response = _run_streaming_call(api_messages, api_tools, on_stream_chunk)
-        else:
-            # 非流式调用（E1: 异常直接向上抛出）
-            response = call_llm(api_messages, tools=api_tools)
+        # ---- API 调用（含上下文压缩恢复 + 故障转移） ----
+        response = _make_api_call_with_recovery(
+            use_stream=use_stream,
+            api_messages=api_messages,
+            api_tools=api_tools,
+            on_stream_chunk=on_stream_chunk,
+            messages=messages,
+            system_prompt=system_prompt,
+            compression_config=_compression_config,
+            current_model=_current_model,
+            current_provider_idx=_current_provider_idx,
+            current_model_idx=_current_model_idx,
+        )
+
+        # 更新故障转移状态
+        _current_model = response.get("_model", _current_model)
+        _current_provider_idx = response.get("_provider_idx", _current_provider_idx)
+        _current_model_idx = response.get("_model_idx", _current_model_idx)
+        # 如果压缩重建了 messages，更新引用
+        if "_messages" in response:
+            messages = response["_messages"]
+        response = response["response"]
 
         # 创建 assistant 消息并加入历史
         assistant_msg = Message(
@@ -251,7 +351,7 @@ def run_conversation(
 
         if response.finish_reason == "stop":
             _persist()
-            reply = response.content or ""
+            reply = (_accumulated_content or "") + (response.content or "")
             reply_preview = reply[:500] + ("…" if len(reply) > 500 else "")
             logger.info(
                 "对话正常结束: %d 轮迭代, 回复长度 %d 字符, 回复=%s",
@@ -261,6 +361,10 @@ def run_conversation(
             return reply, messages, session_id
 
         elif response.finish_reason == "tool_calls":
+            # 重置续写状态
+            _accumulated_content = ""
+            _continuation_count = 0
+
             if not response.tool_calls:
                 continue
 
@@ -285,6 +389,30 @@ def run_conversation(
                 )
 
         elif response.finish_reason == "length":
+            # thinking-budget 检测
+            if (
+                response.completion_tokens > 0
+                and not response.content
+                and not response.tool_calls
+            ):
+                print("⚠️ 思考模式占用了全部输出空间", file=sys.stderr)
+                _persist()
+                reply = _accumulated_content or ""
+                return reply, messages, session_id
+
+            _continuation_count += 1
+            _accumulated_content += (response.content or "")
+
+            if _continuation_count > MAX_CONTINUATION_ATTEMPTS:
+                logger.warning(
+                    "续写已达上限 %d 次，停止续写",
+                    MAX_CONTINUATION_ATTEMPTS,
+                )
+                _persist()
+                return _accumulated_content, messages, session_id
+
+            # 注入续写提示（role="user"）
+            messages.append(Message(role="user", content=CONTINUE_MESSAGE))
             continue
 
         else:
@@ -306,13 +434,171 @@ def run_conversation(
     return last_assistant, messages, session_id
 
 
+def _make_api_call_with_recovery(
+    *,
+    use_stream: bool,
+    api_messages: list[dict],
+    api_tools: list[dict] | None,
+    on_stream_chunk: Callable | None,
+    messages: list[Message],
+    system_prompt: str,
+    compression_config: CompressionConfig,
+    current_model: str | None,
+    current_provider_idx: int,
+    current_model_idx: int,
+) -> dict:
+    """执行一次 API 调用，含压缩恢复和故障转移。
+
+    Returns:
+        dict with keys: "response" (LLMResponse), plus optional
+        "_model", "_provider_idx", "_model_idx", "_messages" for state updates.
+    """
+    provider_idx = current_provider_idx
+    model_idx = current_model_idx
+    model = current_model
+    local_messages = messages
+
+    # 设置当前凭证
+    _apply_provider_credentials(provider_idx)
+
+    while True:
+        try:
+            if use_stream:
+                resp = with_retry(_run_streaming_call, api_messages, api_tools, on_stream_chunk, model=model)
+            else:
+                resp = with_retry(call_llm, api_messages, tools=api_tools, model=model)
+            return {
+                "response": resp,
+                "_model": model,
+                "_provider_idx": provider_idx,
+                "_model_idx": model_idx,
+            }
+        except UnrecoverableError as e:
+            # 退避超时 → 故障转移
+            logger.warning("退避超时，尝试故障转移: %s", e)
+            failover = _try_failover(provider_idx, model_idx)
+            if failover is None:
+                print("⚠️ 所有备用模型已耗尽", file=sys.stderr)
+                raise
+            provider_idx, model_idx, model, api_key, base_url = failover
+            set_client_credentials(api_key, base_url)
+            continue
+        except Exception as e:
+            category = classify_error(e)
+
+            if category == ErrorCategory.context_overflow:
+                logger.warning(
+                    "上下文超长，尝试压缩: %d tokens",
+                    estimate_tokens(api_messages),
+                )
+                try:
+                    history_dicts = messages_to_api_messages(local_messages)
+                    result = compress(history_dicts, compression_config)
+                    if result.layers_applied:
+                        local_messages = _dicts_to_messages(result.after_dicts)
+                        sys_msg = {"role": "system", "content": system_prompt}
+                        api_messages = [sys_msg] + messages_to_api_messages(local_messages)
+                        logger.info(
+                            "上下文压缩完成: %d -> %d tokens, 重试",
+                            result.before_tokens, result.after_tokens,
+                        )
+                    # 压缩后重试（含退避保护 + E3: 再次 overflow 时警告）
+                    try:
+                        if use_stream:
+                            resp = with_retry(
+                                _run_streaming_call,
+                                api_messages, api_tools, on_stream_chunk, model=model,
+                            )
+                        else:
+                            resp = with_retry(
+                                call_llm, api_messages, tools=api_tools, model=model,
+                            )
+                        return {
+                            "response": resp,
+                            "_messages": local_messages,
+                            "_model": model,
+                            "_provider_idx": provider_idx,
+                            "_model_idx": model_idx,
+                        }
+                    except Exception as retry_e:
+                        if classify_error(retry_e) == ErrorCategory.context_overflow:
+                            print(
+                                "\u26a0\ufe0f 压缩后上下文仍然超长，请新开 session",
+                                file=sys.stderr,
+                            )
+                            return {
+                                "response": LLMResponse(content="", finish_reason="stop", tool_calls=None),
+                                "_messages": local_messages,
+                                "_model": model,
+                                "_provider_idx": provider_idx,
+                                "_model_idx": model_idx,
+                            }
+                        raise
+                except CompressionStuckError as se:
+                    logger.error("压缩 stuck: %s", se)
+                    print(f"\n⚠️ 上下文压缩无法减小: {se}", file=sys.stderr)
+                    # 尝试故障转移（备用模型可能有更大的上下文窗口）
+                    failover = _try_failover(provider_idx, model_idx)
+                    if failover is None:
+                        raise UnrecoverableError(
+                            f"上下文压缩 stuck 且所有备用模型已耗尽: {se}", original_error=e,
+                        ) from e
+                    provider_idx, model_idx, model, api_key, base_url = failover
+                    set_client_credentials(api_key, base_url)
+                    continue
+
+            elif category in (
+                ErrorCategory.auth,
+                ErrorCategory.billing,
+                ErrorCategory.model_not_found,
+            ):
+                failover = _try_failover(provider_idx, model_idx)
+                if failover is None:
+                    print("⚠️ 所有备用模型已耗尽", file=sys.stderr)
+                    raise UnrecoverableError(
+                        f"所有备用模型已耗尽: {e}", original_error=e,
+                    ) from e
+                provider_idx, model_idx, model, api_key, base_url = failover
+                set_client_credentials(api_key, base_url)
+                continue
+
+            else:
+                raise
+
+
+def _apply_provider_credentials(provider_idx: int) -> None:
+    """根据当前 provider index 设置 API 凭证。"""
+    if provider_idx < len(PROVIDER_CONFIGS):
+        provider = PROVIDER_CONFIGS[provider_idx]
+        set_client_credentials(provider["api_key"], provider["base_url"])
+    else:
+        set_client_credentials(None, None)  # 使用默认
+
+
+def _restore_primary_model() -> None:
+    """尝试 ping 主模型恢复连接，失败则抛出异常。"""
+    from dezhu_agent.config import MODEL_NAME
+
+    # 保存当前凭证
+    provider = PROVIDER_CONFIGS[0]
+    set_client_credentials(provider["api_key"], provider["base_url"])
+    primary_model = provider["models"][0] if provider["models"] else MODEL_NAME
+    # 轻量 ping
+    call_llm(
+        [{"role": "user", "content": "ping"}],
+        model=primary_model,
+        tools=None,
+    )
+
+
 def _run_streaming_call(
     api_messages: list[dict],
     api_tools: list[dict] | None,
     on_chunk: Callable,
+    model: str | None = None,
 ) -> LLMResponse:
     """执行一次流式 API 调用，通过回调逐 chunk 输出，返回完整 LLMResponse."""
-    generator = call_llm_stream(api_messages, tools=api_tools)
+    generator = call_llm_stream(api_messages, tools=api_tools, model=model)
     final_response: LLMResponse | None = None
 
     try:
